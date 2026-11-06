@@ -1,20 +1,38 @@
 import os
+import io
+import uuid
+import json
 import requests
 import mysql.connector
 import stripe
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort, jsonify
-
-
+from flasgger import Swagger
 from minio import Minio
 from werkzeug.utils import secure_filename
-import io
-import uuid
 
-# Configuração do Stripe (Modo de Teste)
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'openwave_secret_key_change_me')
+
+swagger = Swagger(app, template={
+    'info': {
+        'title': 'OpenWave Core API',
+        'version': '2.0.0',
+        'description': 'API do OpenWave para gerenciamento de canais de rádio, escuta e transmissões de emergência.'
+    }
+})
+
+# ==============================================================
+# CONFIGURAÇÕES DE SERVIÇOS EXTERNOS E INTERNOS
+# ==============================================================
+AUTH_SERVICE_URL = os.getenv('AUTH_SERVICE_URL', 'http://auth-service:5000')
+LOG_SERVICE_URL = os.getenv('LOG_SERVICE_URL', 'http://log-service:5000')
+
+# Stripe
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
+# MinIO
 MINIO_HOST = os.getenv('MINIO_ENDPOINT', 'minio')
 MINIO_PORT = os.getenv('MINIO_PORT', '9000')
 if ':' in MINIO_HOST:
@@ -25,7 +43,7 @@ else:
 MINIO_ACCESS_KEY = os.getenv('MINIO_ROOT_USER', os.getenv('MINIO_ACCESS_KEY', 'minioadmin'))
 MINIO_SECRET_KEY = os.getenv('MINIO_ROOT_PASSWORD', os.getenv('MINIO_SECRET_KEY', 'minioadmin123'))
 MINIO_PUBLIC_URL = os.getenv('MINIO_PUBLIC_URL', 'http://localhost:9010')
-MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'perfil-fotos')
+MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'openwave-midias')
 
 try:
     minio_client = Minio(
@@ -34,28 +52,45 @@ try:
         secret_key=MINIO_SECRET_KEY,
         secure=False
     )
+    # Garante que o bucket exista e tenha política de leitura pública
+    if not minio_client.bucket_exists(MINIO_BUCKET):
+        minio_client.make_bucket(MINIO_BUCKET)
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": ["*"]},
+                "Action": ["s3:GetObject"],
+                "Resource": [f"arn:aws:s3:::{MINIO_BUCKET}/*"]
+            }]
+        }
+        minio_client.set_bucket_policy(MINIO_BUCKET, json.dumps(policy))
 except Exception as e:
-    print("MinIO Client Initialization Error:", e)
+    print(f"[OpenWave] Aviso ao inicializar cliente MinIO: {e}")
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'}
+ALLOWED_AUDIO_EXTENSIONS = {'mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'}
 
-app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'default_secret')
-AUTH_SERVICE_URL = os.getenv('AUTH_SERVICE_URL', 'http://auth-service:5000')
-LOG_SERVICE_URL = os.getenv('LOG_SERVICE_URL', 'http://log-service:5000')
+def allowed_image(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
 
+def allowed_audio(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_AUDIO_EXTENSIONS
+
+# ==============================================================
+# AUDITORIA E BANCO DE DADOS
+# ==============================================================
 def send_audit_log(acao, user_id=None):
+    """Envia eventos de negócio estruturados para o log-service / Redis."""
     try:
         uid = user_id or session.get('user_id', 'anonimo')
         requests.post(f"{LOG_SERVICE_URL}/api/log", json={
-            'usuario_id': uid,
+            'usuario_id': str(uid),
             'acao': acao,
             'ip_origem': request.remote_addr
         }, timeout=2)
     except Exception as e:
-        print(f"Erro ao enviar log: {e}")
+        print(f"[OpenWave] Erro ao enviar log de auditoria: {e}")
 
 def get_db_connection():
     return mysql.connector.connect(
@@ -65,33 +100,106 @@ def get_db_connection():
         database=os.getenv('DB_NAME')
     )
 
-def ensure_db_schema():
-    """Garante que as colunas do plano premium existam no banco relacional."""
+def init_domain_db():
+    """Garante a existência das 3 tabelas relacionais do domínio OpenWave."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        for col_sql in [
-            "ALTER TABLE usuarios ADD COLUMN is_premium BOOLEAN NOT NULL DEFAULT 0",
-            "ALTER TABLE usuarios ADD COLUMN stripe_customer_id VARCHAR(255)",
-            "ALTER TABLE usuarios ADD COLUMN stripe_subscription_id VARCHAR(255)"
-        ]:
-            try:
-                cursor.execute(col_sql)
-                conn.commit()
-            except mysql.connector.Error:
-                pass
+
+        # 1. Usuários
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                nome VARCHAR(100) NOT NULL,
+                email VARCHAR(100) NOT NULL UNIQUE,
+                senha_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(20) NOT NULL DEFAULT 'listener',
+                bio TEXT,
+                avatar_url VARCHAR(255),
+                is_premium BOOLEAN NOT NULL DEFAULT 0,
+                stripe_customer_id VARCHAR(255),
+                stripe_subscription_id VARCHAR(255),
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 2. Canais (Recurso Principal do OpenWave)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canais (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                nome VARCHAR(120) NOT NULL,
+                frequencia VARCHAR(60) NOT NULL,
+                categoria VARCHAR(50) NOT NULL,
+                cidade VARCHAR(100) NOT NULL,
+                estado VARCHAR(2) NOT NULL,
+                descricao TEXT,
+                status VARCHAR(20) NOT NULL DEFAULT 'online',
+                stream_url VARCHAR(255),
+                icone_url VARCHAR(255),
+                delay_segundos INT NOT NULL DEFAULT 600,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 3. Gravações de Ocorrências (Arquivos de áudio no MinIO)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gravacoes_ocorrencias (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                canal_id INT NOT NULL,
+                usuario_id INT NOT NULL,
+                titulo VARCHAR(150) NOT NULL,
+                audio_url VARCHAR(255) NOT NULL,
+                duracao_segundos INT NOT NULL DEFAULT 60,
+                data_hora_ocorrencia DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                descricao TEXT,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (canal_id) REFERENCES canais(id) ON DELETE CASCADE,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 4. Canais Favoritos por Usuário
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canais_favoritos (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                canal_id INT NOT NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_user_canal (usuario_id, canal_id),
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                FOREIGN KEY (canal_id) REFERENCES canais(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        conn.commit()
         cursor.close()
         conn.close()
+        print("[OpenWave] Esquema relacional do domínio inicializado com sucesso.")
     except Exception as e:
-        print(f"[Catalog] Aviso ao verificar colunas no banco: {e}")
+        print(f"[OpenWave] Aviso ao inicializar tabelas do banco: {e}")
 
 try:
-    ensure_db_schema()
-except Exception:
-    pass
+    init_domain_db()
+except Exception as e:
+    print(f"[OpenWave] Erro na inicialização do banco: {e}")
+
+def get_user_role(user_id):
+    """Consulta o papel (role) do usuário no auth-service com fallback para sessão."""
+    if not user_id:
+        return 'listener'
+    try:
+        res = requests.get(f"{AUTH_SERVICE_URL}/api/check-role/{user_id}", timeout=3)
+        if res.status_code == 200:
+            return res.json().get('role', 'listener')
+    except Exception:
+        pass
+    return session.get('role', 'listener')
 
 def get_user_premium_status(user_id):
-    """Consulta o status premium do usuário diretamente no banco de dados."""
+    """Consulta se o usuário possui o Plano Sentinela Pro ativo no Stripe."""
     if not user_id:
         return False
     try:
@@ -103,41 +211,116 @@ def get_user_premium_status(user_id):
         conn.close()
         return bool(row.get('is_premium', 0)) if row else False
     except Exception as e:
-        print(f"Erro ao checar status premium: {e}")
+        print(f"[OpenWave] Erro ao checar status premium: {e}")
         return False
 
+# ==============================================================
+# ROTAS PÚBLICAS E LANDING PAGE
+# ==============================================================
+
+@app.route('/')
+def index():
+    """
+    Se o usuário não estiver autenticado, exibe a Landing Page pública com a proposta de valor.
+    Se estiver autenticado, renderiza o Dashboard do OpenWave com a grade de canais.
+    """
+    if 'user_id' not in session:
+        # Requisito 9: Landing page pública sem login
+        return render_template('landing.html')
+
+    # Usuário autenticado -> Dashboard de Canais
+    user_id = session['user_id']
+    is_premium = get_user_premium_status(user_id)
+    session['is_premium'] = is_premium
+    user_role = get_user_role(user_id)
+    session['role'] = user_role
+
+    categoria_filtro = request.args.get('categoria', '').strip()
+    busca_filtro = request.args.get('busca', '').strip()
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    query = """
+        SELECT c.*, u.nome as feeder_nome,
+               (SELECT COUNT(*) FROM canais_favoritos cf WHERE cf.canal_id = c.id) as total_ouvintes
+        FROM canais c
+        JOIN usuarios u ON c.usuario_id = u.id
+        WHERE 1=1
+    """
+    params = []
+    if categoria_filtro:
+        query += " AND c.categoria = %s"
+        params.append(categoria_filtro)
+    if busca_filtro:
+        query += " AND (c.nome LIKE %s OR c.cidade LIKE %s OR c.frequencia LIKE %s)"
+        like_term = f"%{busca_filtro}%"
+        params.extend([like_term, like_term, like_term])
+
+    query += " ORDER BY c.status = 'online' DESC, c.id DESC"
+
+    cursor.execute(query, tuple(params))
+    canais = cursor.fetchall()
+
+    # Recupera IDs dos canais favoritados pelo usuário
+    cursor.execute("SELECT canal_id FROM canais_favoritos WHERE usuario_id = %s", (user_id,))
+    favoritos = {row['canal_id'] for row in cursor.fetchall()}
+
+    cursor.close()
+    conn.close()
+
+    return render_template(
+        'index.html',
+        canais=canais,
+        favoritos=favoritos,
+        is_premium=is_premium,
+        user_role=user_role,
+        categoria_filtro=categoria_filtro,
+        busca_filtro=busca_filtro,
+        limite_favoritos=3
+    )
+
+@app.route('/landing')
+def public_landing():
+    """Acesso direto à landing page pública mesmo estando logado."""
+    return render_template('landing.html')
+
+# ==============================================================
+# AUTENTICAÇÃO E SESSÃO
+# ==============================================================
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        nome = request.form['nome']
-        email = request.form['email']
-        senha = request.form['senha']
-        
+        nome = request.form.get('nome')
+        email = request.form.get('email')
+        senha = request.form.get('senha')
+        role = request.form.get('role', 'listener')
+
         try:
             res = requests.post(f"{AUTH_SERVICE_URL}/api/register", json={
                 'nome': nome,
                 'email': email,
                 'senha': senha,
-                'role': 'usuario'
+                'role': role
             }, timeout=15)
             data = res.json()
-            if res.status_code == 200 and data.get('success'):
-                flash('Cadastro realizado com sucesso! Faça login.')
+            if res.status_code in [200, 201] and data.get('success'):
+                flash('Conta criada com sucesso no OpenWave! Faça login para começar.')
                 return redirect(url_for('login'))
             else:
                 flash(data.get('error', 'Erro ao realizar cadastro.'))
         except requests.RequestException as e:
-            flash(f'Erro de conexão com o serviço de autenticação: {e}')
-            
+            flash(f'Erro ao conectar ao serviço de autenticação: {e}')
+
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form['email']
-        senha = request.form['senha']
-        
+        email = request.form.get('email')
+        senha = request.form.get('senha')
+
         try:
             res = requests.post(f"{AUTH_SERVICE_URL}/api/login", json={
                 'email': email,
@@ -148,27 +331,29 @@ def login():
                 user = data.get('user', {})
                 session['user_id'] = user.get('id')
                 session['nome'] = user.get('nome')
-                session['role'] = user.get('role', 'usuario')
+                session['role'] = user.get('role', 'listener')
                 session['avatar_url'] = user.get('avatar_url')
                 session['is_premium'] = bool(user.get('is_premium', False))
+                send_audit_log('login_sucesso', user.get('id'))
                 return redirect(url_for('index'))
             else:
                 flash(data.get('error', 'Credenciais inválidas.'))
         except requests.RequestException as e:
             flash(f'Erro de conexão com o serviço de autenticação: {e}')
-            
+
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
     send_audit_log('logout')
     session.clear()
-    return redirect(url_for('login'))
+    flash('Você saiu do sistema com segurança.')
+    return redirect(url_for('index'))
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
-        email = request.form['email']
+        email = request.form.get('email')
         try:
             base_url = os.getenv('APP_URL') or request.host_url
             res = requests.post(f"{AUTH_SERVICE_URL}/api/forgot-password", json={
@@ -178,24 +363,23 @@ def forgot_password():
             data = res.json()
             flash(data.get('message', 'Solicitação processada com sucesso.'))
         except requests.RequestException as e:
-            flash(f'Erro ao se comunicar com o serviço de autenticação: {e}')
+            flash(f'Erro ao comunicar com o serviço de autenticação: {e}')
         return redirect(url_for('login'))
-        
+
     return render_template('forgot_password.html')
 
 @app.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
-    # Verifica validade do token primeiro
     try:
         res_verify = requests.post(f"{AUTH_SERVICE_URL}/api/verify-token", json={'token': token}, timeout=15)
         data_verify = res_verify.json()
         if not data_verify.get('valid'):
             return render_template('reset_password.html', error=data_verify.get('reason', 'Link inválido ou expirado.'))
     except requests.RequestException as e:
-        return render_template('reset_password.html', error=f'Erro de conexão com o serviço de autenticação: {e}')
+        return render_template('reset_password.html', error=f'Erro de conexão com autenticação: {e}')
 
     if request.method == 'POST':
-        nova_senha = request.form['nova_senha']
+        nova_senha = request.form.get('nova_senha')
         try:
             res = requests.post(f"{AUTH_SERVICE_URL}/api/reset-password", json={
                 'token': token,
@@ -208,257 +392,633 @@ def reset_password(token):
             else:
                 return render_template('reset_password.html', error=data.get('error', 'Erro ao redefinir senha.'))
         except requests.RequestException as e:
-            return render_template('reset_password.html', error=f'Erro ao comunicar com o serviço de autenticação: {e}')
+            return render_template('reset_password.html', error=f'Erro ao comunicar com autenticação: {e}')
 
     return render_template('reset_password.html', error=None)
 
-@app.route('/')
-def index():
+# ==============================================================
+# CRUD DO RECURSO PRINCIPAL: CANAIS DE RÁDIO
+# ==============================================================
+
+@app.route('/canais/novo', methods=['GET', 'POST'])
+def canal_novo():
+    """
+    Criação de novo canal de rádio.
+    Acesso restrito a 'feeder' e 'admin'. Se 'listener' tentar, responde 403 Forbidden.
+    """
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    
-    # Sincroniza status premium do usuário atual
-    is_premium = get_user_premium_status(session['user_id'])
-    session['is_premium'] = is_premium
 
-    api_key = os.getenv('TMDB_API_KEY')
-    url_busca = f"https://api.themoviedb.org/3/search/person?query=Tom+Hanks&api_key={api_key}"
-    search_res = requests.get(url_busca).json()
-    
-    print("Retorno TMDB:", search_res) # Debug para ver o erro no terminal
-    
-    movies = []
-    if 'results' in search_res and len(search_res['results']) > 0:
-        person_id = search_res['results'][0]['id']
-        movies_res = requests.get(f"https://api.themoviedb.org/3/person/{person_id}/movie_credits?api_key={api_key}").json()
-        movies = movies_res.get('cast', [])
-    else:
-        flash('Erro de API: Filme não encontrado ou chave TMDB inválida. Verifique os logs.')
+    user_id = session['user_id']
+    user_role = get_user_role(user_id)
+
+    # Requisito 5: Bloqueio 403 para papéis não permitidos
+    if user_role not in ['feeder', 'admin']:
+        send_audit_log('403_permissao_negada_criar_canal', user_id)
+        abort(403, description="Apenas operadores de estação (feeder) e administradores podem cadastrar canais de rádio.")
+
+    if request.method == 'POST':
+        nome = request.form.get('nome')
+        frequencia = request.form.get('frequencia')
+        categoria = request.form.get('categoria')
+        cidade = request.form.get('cidade')
+        estado = (request.form.get('estado') or 'SP').upper()
+        descricao = request.form.get('descricao')
+        stream_url = request.form.get('stream_url')
+        status = request.form.get('status', 'online')
+        delay_segundos = int(request.form.get('delay_segundos') or 600)
+
+        icone_url = None
+        foto = request.files.get('icone')
+        if foto and foto.filename:
+            if allowed_image(foto.filename):
+                file_data = foto.read()
+                filename = secure_filename(foto.filename)
+                ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'jpg'
+                object_name = f"canais/icone_{uuid.uuid4().hex}.{ext}"
+                try:
+                    minio_client.put_object(
+                        MINIO_BUCKET,
+                        object_name,
+                        io.BytesIO(file_data),
+                        len(file_data),
+                        content_type=foto.content_type
+                    )
+                    icone_url = url_for('serve_icone', filename=object_name)
+                except Exception as e:
+                    print(f"[MinIO] Erro ao salvar ícone do canal: {e}")
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO canais (usuario_id, nome, frequencia, categoria, cidade, estado, descricao, status, stream_url, icone_url, delay_segundos)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, nome, frequencia, categoria, cidade, estado, descricao, status, stream_url, icone_url, delay_segundos))
+            conn.commit()
+            canal_id = cursor.lastrowid
+            send_audit_log(f'canal_criado_{canal_id}', user_id)
+            flash(f'Canal de rádio "{nome}" ({frequencia}) cadastrado com sucesso!')
+            return redirect(url_for('canal_detalhe', canal_id=canal_id))
+        except Exception as e:
+            flash(f'Erro ao cadastrar canal: {e}')
+        finally:
+            cursor.close()
+            conn.close()
+
+    return render_template('canal_form.html', canal=None, modo='novo')
+
+@app.route('/canais/<int:canal_id>')
+def canal_detalhe(canal_id):
+    """
+    Exibe os detalhes da frequência, player de áudio, status e histórico de ocorrências gravadas.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    is_premium = get_user_premium_status(user_id)
+    user_role = get_user_role(user_id)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
-    cursor.execute("SELECT tmdb_movie_id FROM favoritos WHERE usuario_id = %s", (session['user_id'],))
-    favoritos = {row['tmdb_movie_id'] for row in cursor.fetchall()}
-    
+
     cursor.execute("""
-        SELECT c.id, c.tmdb_movie_id, c.texto, c.usuario_id, u.nome
-        FROM comentarios c
+        SELECT c.*, u.nome as feeder_nome, u.email as feeder_email
+        FROM canais c
         JOIN usuarios u ON c.usuario_id = u.id
-    """)
-    comentarios = {}
-    for row in cursor.fetchall():
-        if row['tmdb_movie_id'] not in comentarios:
-            comentarios[row['tmdb_movie_id']] = []
-        comentarios[row['tmdb_movie_id']].append({
-            'id': row['id'],
-            'texto': row['texto'],
-            'usuario_id': row['usuario_id'],
-            'nome': row['nome']
-        })
-        
+        WHERE c.id = %s
+    """, (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        abort(404, description="Canal de rádio não encontrado.")
+
+    # Busca ocorrências gravadas
+    cursor.execute("""
+        SELECT g.*, u.nome as autor_nome
+        FROM gravacoes_ocorrencias g
+        JOIN usuarios u ON g.usuario_id = u.id
+        WHERE g.canal_id = %s
+        ORDER BY g.data_hora_ocorrencia DESC
+    """, (canal_id,))
+    gravacoes = cursor.fetchall()
+
+    # Verifica se o canal é favorito
+    cursor.execute("SELECT id FROM canais_favoritos WHERE usuario_id = %s AND canal_id = %s", (user_id, canal_id))
+    is_favorito = bool(cursor.fetchone())
+
     cursor.close()
     conn.close()
 
+    is_owner = (canal['usuario_id'] == user_id)
+    can_manage = is_owner or (user_role == 'admin')
+
+    send_audit_log(f'acesso_canal_{canal_id}', user_id)
+
     return render_template(
-        'index.html', 
-        movies=movies, 
-        favoritos=favoritos, 
-        comentarios=comentarios, 
+        'canal_detalhe.html',
+        canal=canal,
+        gravacoes=gravacoes,
+        is_favorito=is_favorito,
         is_premium=is_premium,
-        limite_favoritos=5
+        is_owner=is_owner,
+        can_manage=can_manage
     )
 
-@app.route('/favoritar', methods=['POST'])
-def favoritar():
-    if 'user_id' not in session: return redirect(url_for('login'))
+@app.route('/canais/<int:canal_id>/editar', methods=['GET', 'POST'])
+def canal_editar(canal_id):
+    """
+    Edição de canal de rádio.
+    Requisito 6 (Isolamento por Usuário): Apenas o feeder proprietário ou o admin podem editar.
+    Tentar abrir ou alterar registro de outro usuário retorna 403 Forbidden.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
     user_id = session['user_id']
-    movie_id = request.form['movie_id']
-    titulo = request.form['titulo']
-    poster_path = request.form['poster_path']
-    
-    # 4. Benefício real do Plano Premium: limite de favoritos para plano gratuito
+    user_role = get_user_role(user_id)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM canais WHERE id = %s", (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        abort(404, description="Canal de rádio não encontrado.")
+
+    # Requisito 6: Isolamento por usuário (multi-tenancy) e RBAC
+    is_owner = (canal['usuario_id'] == user_id)
+    if not is_owner and user_role != 'admin':
+        cursor.close()
+        conn.close()
+        send_audit_log(f'403_acesso_negado_editar_canal_{canal_id}', user_id)
+        abort(403, description="403 Forbidden - Você não tem permissão para editar um canal pertencente a outra estação transmissora.")
+
+    if request.method == 'POST':
+        nome = request.form.get('nome') or canal['nome']
+        frequencia = request.form.get('frequencia') or canal['frequencia']
+        categoria = request.form.get('categoria') or canal['categoria']
+        cidade = request.form.get('cidade') or canal['cidade']
+        estado = (request.form.get('estado') or canal['estado']).upper()
+        descricao = request.form.get('descricao')
+        stream_url = request.form.get('stream_url')
+        status = request.form.get('status', canal['status'])
+
+        icone_url = canal['icone_url']
+        foto = request.files.get('icone')
+        if foto and foto.filename and allowed_image(foto.filename):
+            file_data = foto.read()
+            filename = secure_filename(foto.filename)
+            ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'jpg'
+            object_name = f"canais/icone_{uuid.uuid4().hex}.{ext}"
+            try:
+                minio_client.put_object(
+                    MINIO_BUCKET,
+                    object_name,
+                    io.BytesIO(file_data),
+                    len(file_data),
+                    content_type=foto.content_type
+                )
+                icone_url = url_for('serve_icone', filename=object_name)
+            except Exception as e:
+                print(f"[MinIO] Erro ao atualizar ícone: {e}")
+
+        try:
+            cursor.execute("""
+                UPDATE canais
+                SET nome = %s, frequencia = %s, categoria = %s, cidade = %s, estado = %s, descricao = %s, status = %s, stream_url = %s, icone_url = %s
+                WHERE id = %s
+            """, (nome, frequencia, categoria, cidade, estado, descricao, status, stream_url, icone_url, canal_id))
+            conn.commit()
+            send_audit_log(f'canal_atualizado_{canal_id}', user_id)
+            flash('Canal de rádio atualizado com sucesso!')
+            return redirect(url_for('canal_detalhe', canal_id=canal_id))
+        except Exception as e:
+            flash(f'Erro ao atualizar canal: {e}')
+        finally:
+            cursor.close()
+            conn.close()
+
+    cursor.close()
+    conn.close()
+    return render_template('canal_form.html', canal=canal, modo='editar')
+
+@app.route('/canais/<int:canal_id>/remover', methods=['POST'])
+def canal_remover(canal_id):
+    """
+    Exclusão do canal de rádio.
+    Requisito 6 (Isolamento por Usuário): Apenas o feeder dono ou admin podem remover.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    user_role = get_user_role(user_id)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM canais WHERE id = %s", (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        abort(404, description="Canal não encontrado.")
+
+    is_owner = (canal['usuario_id'] == user_id)
+    if not is_owner and user_role != 'admin':
+        cursor.close()
+        conn.close()
+        send_audit_log(f'403_acesso_negado_remover_canal_{canal_id}', user_id)
+        abort(403, description="403 Forbidden - Você não tem permissão para remover canais de outro operador.")
+
+    try:
+        cursor.execute("DELETE FROM canais WHERE id = %s", (canal_id,))
+        conn.commit()
+        send_audit_log(f'canal_removido_{canal_id}', user_id)
+        flash(f'Canal "{canal["nome"]}" excluído com sucesso.')
+    except Exception as e:
+        flash(f'Erro ao excluir canal: {e}')
+    finally:
+        cursor.close()
+        conn.close()
+
+    return redirect(url_for('index'))
+
+# ==============================================================
+# UPLOAD NO MINIO LIGADO AO DOMÍNIO: GRAVAÇÕES DE OCORRÊNCIAS
+# ==============================================================
+
+@app.route('/canais/<int:canal_id>/gravacoes', methods=['POST'])
+def gravar_ocorrencia(canal_id):
+    """
+    Requisito 8: Upload de arquivo de áudio (.mp3/.ogg/.wav) de transmissão de emergência no MinIO.
+    Acesso restrito ao operador dono do canal ou admin.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    user_role = get_user_role(user_id)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM canais WHERE id = %s", (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        abort(404, description="Canal não encontrado.")
+
+    is_owner = (canal['usuario_id'] == user_id)
+    if not is_owner and user_role != 'admin':
+        cursor.close()
+        conn.close()
+        send_audit_log(f'403_tentativa_upload_canal_alheio_{canal_id}', user_id)
+        abort(403, description="Apenas a estação dona do canal ou administradores podem publicar gravações.")
+
+    titulo = request.form.get('titulo') or 'Despacho de Ocorrência'
+    descricao = request.form.get('descricao', '')
+    duracao_segundos = int(request.form.get('duracao_segundos') or 60)
+    audio_file = request.files.get('audio')
+
+    if not audio_file or not audio_file.filename:
+        cursor.close()
+        conn.close()
+        flash("Nenhum arquivo de áudio selecionado.")
+        return redirect(url_for('canal_detalhe', canal_id=canal_id))
+
+    if not allowed_audio(audio_file.filename):
+        cursor.close()
+        conn.close()
+        flash("Formato de áudio inválido. Use .mp3, .ogg, .wav, .m4a.")
+        return redirect(url_for('canal_detalhe', canal_id=canal_id))
+
+    file_bytes = audio_file.read()
+    if len(file_bytes) > 25 * 1024 * 1024:
+        cursor.close()
+        conn.close()
+        flash("O arquivo de gravação deve ter no máximo 25MB.")
+        return redirect(url_for('canal_detalhe', canal_id=canal_id))
+
+    filename = secure_filename(audio_file.filename)
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'mp3'
+    object_name = f"gravacoes/audio_{canal_id}_{uuid.uuid4().hex}.{ext}"
+
+    try:
+        minio_client.put_object(
+            MINIO_BUCKET,
+            object_name,
+            io.BytesIO(file_bytes),
+            len(file_bytes),
+            content_type=audio_file.content_type or 'audio/mpeg'
+        )
+        audio_url = url_for('serve_audio', filename=object_name)
+
+        cursor.execute("""
+            INSERT INTO gravacoes_ocorrencias (canal_id, usuario_id, titulo, audio_url, duracao_segundos, descricao)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (canal_id, user_id, titulo, audio_url, duracao_segundos, descricao))
+        conn.commit()
+        gravacao_id = cursor.lastrowid
+        send_audit_log(f'gravacao_audio_enviada_{gravacao_id}', user_id)
+        flash('Gravação de ocorrência publicada com sucesso!')
+    except Exception as e:
+        flash(f'Erro ao enviar gravação para o storage MinIO: {e}')
+    finally:
+        cursor.close()
+        conn.close()
+
+    return redirect(url_for('canal_detalhe', canal_id=canal_id))
+
+# ==============================================================
+# SERVIÇO DE ARQUIVOS (MINIO OBJECT STORAGE)
+# ==============================================================
+
+@app.route('/audio/<path:filename>')
+def serve_audio(filename):
+    """Entrega streaming de áudio gravado diretamente do MinIO."""
+    try:
+        response = minio_client.get_object(MINIO_BUCKET, filename)
+        file_data = response.read()
+        response.close()
+        response.release_conn()
+        mimetype = 'audio/mpeg'
+        if filename.endswith('.ogg'): mimetype = 'audio/ogg'
+        elif filename.endswith('.wav'): mimetype = 'audio/wav'
+        elif filename.endswith('.m4a'): mimetype = 'audio/mp4'
+        return send_file(io.BytesIO(file_data), mimetype=mimetype)
+    except Exception as e:
+        print(f"[MinIO] Erro ao servir áudio: {e}")
+        abort(404)
+
+@app.route('/icone/<path:filename>')
+def serve_icone(filename):
+    """Entrega ícones/emblemas de canais armazenados no MinIO."""
+    try:
+        response = minio_client.get_object(MINIO_BUCKET, filename)
+        file_data = response.read()
+        response.close()
+        response.release_conn()
+        return send_file(io.BytesIO(file_data), mimetype='image/jpeg')
+    except Exception as e:
+        print(f"[MinIO] Erro ao servir ícone: {e}")
+        abort(404)
+
+@app.route('/avatar/<path:filename>')
+def serve_avatar(filename):
+    """Entrega avatares de usuário a partir do MinIO."""
+    try:
+        response = minio_client.get_object(MINIO_BUCKET, filename)
+        file_data = response.read()
+        response.close()
+        response.release_conn()
+        return send_file(io.BytesIO(file_data), mimetype='image/jpeg')
+    except Exception as e:
+        print(f"[MinIO] Erro ao servir avatar: {e}")
+        abort(404)
+
+# ==============================================================
+# FAVORITOS (RECURSO DO NEGÓCIO COM BENEFÍCIO STRIPE)
+# ==============================================================
+
+@app.route('/canais/<int:canal_id>/favoritar', methods=['POST'])
+def favoritar_canal(canal_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
     is_premium = get_user_premium_status(user_id)
     session['is_premium'] = is_premium
-    LIMITE_GRATUITO = 5
+    LIMITE_GRATUITO = 3
 
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Se for usuário comum, verifica se atingiu o limite de 5 favoritos
         if not is_premium:
-            cursor.execute("SELECT COUNT(*) FROM favoritos WHERE usuario_id = %s", (user_id,))
-            (total_atuais,) = cursor.fetchone()
-            if total_atuais >= LIMITE_GRATUITO:
+            cursor.execute("SELECT COUNT(*) FROM canais_favoritos WHERE usuario_id = %s", (user_id,))
+            (total_favoritos,) = cursor.fetchone()
+            if total_favoritos >= LIMITE_GRATUITO:
                 send_audit_log('403_limite_favoritos_atingido', user_id)
-                flash(f"⚠️ Limite atingido! O plano gratuito permite no máximo {LIMITE_GRATUITO} filmes favoritos. Assine o Plano Premium para ter favoritos ilimitados!")
+                flash(f"⚠️ Limite atingido! O plano gratuito permite favoritar até {LIMITE_GRATUITO} canais. Assine o Plano Sentinela Pro por R$ 9,90/mês para monitoramento ilimitado!")
                 return redirect(url_for('index'))
 
-        cursor.execute("INSERT INTO favoritos (usuario_id, tmdb_movie_id, titulo, poster_path) VALUES (%s, %s, %s, %s)", 
-                       (user_id, movie_id, titulo, poster_path))
+        cursor.execute("INSERT INTO canais_favoritos (usuario_id, canal_id) VALUES (%s, %s)", (user_id, canal_id))
         conn.commit()
-        send_audit_log(f'favoritar_filme_{movie_id}', user_id)
-        flash(f'Filme "{titulo}" adicionado aos favoritos!')
+        send_audit_log(f'canal_favoritado_{canal_id}', user_id)
+        flash('Canal adicionado aos seus favoritos com sucesso!')
     except mysql.connector.IntegrityError:
-        flash(f'O filme "{titulo}" já está na sua lista de favoritos.')
+        flash('Este canal já está na sua lista de favoritos.')
     except Exception as e:
         flash(f'Erro ao favoritar: {e}')
     finally:
         cursor.close()
         conn.close()
-    return redirect(url_for('index'))
 
-@app.route('/desfavoritar', methods=['POST'])
-def desfavoritar():
-    if 'user_id' not in session: return redirect(url_for('login'))
+    return redirect(request.referrer or url_for('index'))
+
+@app.route('/canais/<int:canal_id>/desfavoritar', methods=['POST'])
+def desfavoritar_canal(canal_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
     user_id = session['user_id']
-    movie_id = request.form['movie_id']
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM favoritos WHERE usuario_id = %s AND tmdb_movie_id = %s", 
-                       (user_id, movie_id))
+        cursor.execute("DELETE FROM canais_favoritos WHERE usuario_id = %s AND canal_id = %s", (user_id, canal_id))
         conn.commit()
-        send_audit_log(f'desfavoritar_filme_{movie_id}', user_id)
-        flash('Filme removido dos favoritos com sucesso.')
+        send_audit_log(f'canal_desfavoritado_{canal_id}', user_id)
+        flash('Canal removido dos favoritos.')
     except Exception as e:
-        flash(f'Erro ao remover favorito: {e}')
+        flash(f'Erro ao desfavoritar: {e}')
     finally:
         cursor.close()
         conn.close()
+
     return redirect(request.referrer or url_for('index'))
 
 # ==============================================================
-# ATIVIDADE 7: STRIPE CHECKOUT E WEBHOOK (PLANO PREMIUM)
+# PERFIL DO USUÁRIO
+# ==============================================================
+
+@app.route('/perfil/<int:user_id>', methods=['GET', 'POST'])
+def perfil(user_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, nome, email, role, bio, avatar_url, is_premium, criado_em FROM usuarios WHERE id = %s", (user_id,))
+    usuario = cursor.fetchone()
+
+    if not usuario:
+        cursor.close()
+        conn.close()
+        abort(404, description="Usuário não encontrado.")
+
+    is_owner = (session['user_id'] == user_id)
+
+    if request.method == 'POST':
+        if not is_owner:
+            cursor.close()
+            conn.close()
+            send_audit_log(f'403_editar_perfil_alheio_{user_id}')
+            abort(403, description="Você não pode editar o perfil de outro usuário.")
+
+        nome = request.form.get('nome') or usuario['nome']
+        bio = request.form.get('bio')
+        avatar_url = usuario['avatar_url']
+
+        foto = request.files.get('foto')
+        if foto and foto.filename and allowed_image(foto.filename):
+            file_data = foto.read()
+            if len(file_data) <= 5 * 1024 * 1024:
+                filename = secure_filename(foto.filename)
+                ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'jpg'
+                object_name = f"avatars/avatar_{user_id}_{uuid.uuid4().hex}.{ext}"
+                try:
+                    minio_client.put_object(
+                        MINIO_BUCKET,
+                        object_name,
+                        io.BytesIO(file_data),
+                        len(file_data),
+                        content_type=foto.content_type
+                    )
+                    avatar_url = url_for('serve_avatar', filename=object_name)
+                except Exception as e:
+                    print(f"[MinIO] Erro ao salvar avatar: {e}")
+
+        cursor.execute("UPDATE usuarios SET nome = %s, bio = %s, avatar_url = %s WHERE id = %s",
+                       (nome, bio, avatar_url, user_id))
+        conn.commit()
+        session['nome'] = nome
+        session['avatar_url'] = avatar_url
+        send_audit_log(f'perfil_atualizado_{user_id}', user_id)
+        flash('Perfil atualizado com sucesso!')
+        cursor.close()
+        conn.close()
+        return redirect(url_for('perfil', user_id=user_id))
+
+    # Canais criados (se for feeder)
+    cursor.execute("SELECT * FROM canais WHERE usuario_id = %s ORDER BY id DESC", (user_id,))
+    meus_canais = cursor.fetchall()
+
+    # Canais favoritados
+    cursor.execute("""
+        SELECT c.*, u.nome as feeder_nome
+        FROM canais_favoritos cf
+        JOIN canais c ON cf.canal_id = c.id
+        JOIN usuarios u ON c.usuario_id = u.id
+        WHERE cf.usuario_id = %s
+    """, (user_id,))
+    canais_favoritados = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return render_template(
+        'perfil.html',
+        usuario=usuario,
+        meus_canais=meus_canais,
+        canais_favoritados=canais_favoritados,
+        is_owner=is_owner
+    )
+
+# ==============================================================
+# STRIPE CHECKOUT E WEBHOOK (PLANO SENTINELA PRO)
 # ==============================================================
 
 @app.route('/checkout', methods=['GET', 'POST'])
 @app.route('/stripe/checkout', methods=['GET', 'POST'])
 def checkout():
-    """
-    Cria a Checkout Session no Stripe (modo teste) e redireciona o usuário (Requisito 2).
-    """
+    """Inicia sessão de pagamento no Stripe para o Plano Sentinela Pro."""
     if 'user_id' not in session:
         return redirect(url_for('login'))
-        
+
     user_id = session['user_id']
-    is_premium = get_user_premium_status(user_id)
-    if is_premium:
-        flash("⭐ Você já é um assinante Premium! Aproveite os favoritos ilimitados.")
+    if get_user_premium_status(user_id):
+        flash("⭐ Você já é um assinante Sentinela Pro! Seu acesso sem delay está ativo.")
         return redirect(url_for('perfil', user_id=user_id))
-        
+
     stripe_key = os.getenv('STRIPE_SECRET_KEY')
     if not stripe_key:
-        flash("Configuração Stripe ausente: defina STRIPE_SECRET_KEY no seu arquivo .env.")
+        flash("Configuração do Stripe ausente no ambiente (.env).")
         return redirect(url_for('perfil', user_id=user_id))
-        
+
     stripe.api_key = stripe_key
     app_url = os.getenv('APP_URL') or request.host_url.rstrip('/')
-    
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, email, nome FROM usuarios WHERE id = %s", (user_id,))
     usuario = cursor.fetchone()
     cursor.close()
     conn.close()
-    
-    price_id = os.getenv('STRIPE_PRICE_ID')
-    
-    try:
-        target_price = None
-        if price_id and price_id.strip():
-            raw_id = price_id.strip()
-            if raw_id.startswith('prod_'):
-                # Usuário forneceu o ID do produto em vez do preço; resolve automaticamente via API
-                try:
-                    prices = stripe.Price.list(product=raw_id, active=True, limit=1)
-                    if prices.data:
-                        target_price = prices.data[0].id
-                except Exception as e:
-                    print(f"[Stripe] Aviso ao buscar preço do produto {raw_id}: {e}")
-            else:
-                target_price = raw_id
 
-        if target_price:
-            line_items = [{
-                'price': target_price,
-                'quantity': 1,
-            }]
-        else:
-            line_items = [{
-                'price_data': {
-                    'currency': 'brl',
-                    'product_data': {
-                        'name': 'Catálogo Tom Hanks - Plano Premium',
-                        'description': 'Favoritos ilimitados e selo VIP exclusivo no perfil'
-                    },
-                    'unit_amount': 990, # R$ 9,90 em centavos
-                    'recurring': {
-                        'interval': 'month'
-                    }
+    price_id = os.getenv('STRIPE_PRICE_ID')
+    try:
+        line_items = [{
+            'price_data': {
+                'currency': 'brl',
+                'product_data': {
+                    'name': 'OpenWave — Plano Sentinela Pro',
+                    'description': 'Streaming de rádio em tempo real sem delay, favoritos ilimitados e arquivo de gravações'
                 },
-                'quantity': 1,
-            }]
+                'unit_amount': 990, # R$ 9,90/mês
+                'recurring': {'interval': 'month'}
+            },
+            'quantity': 1,
+        }] if not price_id else [{'price': price_id.strip(), 'quantity': 1}]
 
         checkout_session = stripe.checkout.Session.create(
             line_items=line_items,
             mode='subscription',
             customer_email=usuario['email'] if usuario else None,
             client_reference_id=str(user_id),
-            metadata={
-                'user_id': str(user_id),
-                'plano': 'premium'
-            },
+            metadata={'user_id': str(user_id), 'plano': 'sentinela_pro'},
             success_url=f"{app_url}/checkout/sucesso?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{app_url}/checkout/cancelado",
         )
-        send_audit_log('iniciar_checkout_stripe', user_id)
-        # Redireciona o usuário para o formulário de pagamento hospedado pelo Stripe
+        send_audit_log('iniciar_checkout_sentinela_pro', user_id)
         return redirect(checkout_session.url, code=303)
     except Exception as e:
         print(f"[Stripe Checkout Error] {e}")
-        flash(f"Erro ao criar sessão de checkout no Stripe: {e}")
+        flash(f"Erro ao abrir checkout Stripe: {e}")
         return redirect(url_for('perfil', user_id=user_id))
 
 @app.route('/checkout/sucesso')
 def checkout_sucesso():
-    """
-    Retorno do usuário após conclusão bem-sucedida do checkout no Stripe.
-    """
     if 'user_id' not in session:
         return redirect(url_for('login'))
-        
     user_id = session['user_id']
     send_audit_log('retorno_checkout_sucesso', user_id)
-    # Atualiza a sessão
     session['is_premium'] = get_user_premium_status(user_id)
-    
-    flash("🎉 Parabéns! Sua assinatura foi iniciada. O Stripe está confirmando seu pagamento e seus benefícios já estão liberados!")
+    flash("🎉 Assinatura Sentinela Pro ativada! Bem-vindo à escuta de emergência em tempo real.")
     return redirect(url_for('perfil', user_id=user_id))
 
 @app.route('/checkout/cancelado')
 def checkout_cancelado():
-    """
-    Retorno do usuário se cancelar ou fechar o checkout.
-    """
     if 'user_id' not in session:
         return redirect(url_for('login'))
-        
     user_id = session['user_id']
     send_audit_log('cancelamento_checkout_stripe', user_id)
-    flash("Assinatura cancelada. Nenhuma cobrança foi efetuada e você continua no plano gratuito.")
+    flash("Processo de assinatura cancelado. Nenhuma cobrança foi gerada.")
     return redirect(url_for('perfil', user_id=user_id))
 
 @app.route('/webhook/stripe', methods=['POST'])
 @app.route('/stripe/webhook', methods=['POST'])
 @app.route('/api/stripe/webhook', methods=['POST'])
-@app.route('/api/webhook/stripe', methods=['POST'])
 def stripe_webhook():
     """
-    Endpoint de Webhook que recebe a notificação assíncrona do Stripe (Requisito 3).
-    Valida a assinatura criptográfica (Stripe-Signature).
-    Atualiza o usuário no banco para is_premium = 1 sem nunca armazenar dados de cartão (Requisito 5).
+    Recebe eventos de webhook assinados do Stripe com HMAC SHA256.
+    Promove ou encerra planos sem jamais armazenar dados sensíveis de pagamento.
     """
     payload = request.data
     sig_header = request.headers.get('Stripe-Signature')
@@ -468,42 +1028,23 @@ def stripe_webhook():
         stripe.api_key = stripe_key
 
     event = None
-
     if endpoint_secret:
         try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, endpoint_secret
-            )
-        except ValueError as e:
-            print(f"[Webhook Error] Payload inválido: {e}")
-            return jsonify({'error': 'Payload inválido'}), 400
-        except stripe.error.SignatureVerificationError as e:
-            print(f"[Webhook Error] Assinatura do Stripe inválida: {e}")
-            return jsonify({'error': 'Assinatura inválida'}), 400
+            event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
         except Exception as e:
-            print(f"[Webhook Error] Erro ao validar assinatura: {e}")
-            return jsonify({'error': str(e)}), 400
+            print(f"[Webhook Error] Falha de verificação de assinatura: {e}")
+            return jsonify({'error': 'Assinatura inválida'}), 400
     else:
-        # Fallback caso endpoint_secret não tenha sido preenchido em dev
-        print("[Webhook Warning] STRIPE_WEBHOOK_SECRET não configurado. Parseando JSON diretamente.")
         try:
-            import json
             event = json.loads(payload.decode('utf-8'))
         except Exception as e:
-            return jsonify({'error': 'JSON inválido'}), 400
+            return jsonify({'error': 'Payload inválido'}), 400
 
-    if hasattr(event, 'to_dict'):
-        event_dict = event.to_dict()
-    elif isinstance(event, dict):
-        event_dict = event
-    else:
-        event_dict = dict(event)
-
+    event_dict = event if isinstance(event, dict) else (event.to_dict() if hasattr(event, 'to_dict') else dict(event))
     event_type = event_dict.get('type')
     data_object = event_dict.get('data', {}).get('object', {})
     print(f"[Stripe Webhook] Evento recebido: {event_type}")
 
-    # Pagamento de assinatura confirmado
     if event_type == 'checkout.session.completed':
         user_id = data_object.get('client_reference_id') or (data_object.get('metadata') or {}).get('user_id')
         customer_id = data_object.get('customer')
@@ -513,122 +1054,59 @@ def stripe_webhook():
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute(
-                    """UPDATE usuarios 
-                       SET is_premium = 1, stripe_customer_id = %s, stripe_subscription_id = %s 
-                       WHERE id = %s""",
-                    (customer_id, subscription_id, user_id)
-                )
+                cursor.execute("""
+                    UPDATE usuarios
+                    SET is_premium = 1, stripe_customer_id = %s, stripe_subscription_id = %s
+                    WHERE id = %s
+                """, (customer_id, subscription_id, user_id))
                 conn.commit()
                 cursor.close()
                 conn.close()
-                print(f"[Stripe Webhook] Usuário {user_id} promovido a PREMIUM com sucesso!")
-                send_audit_log(f'upgrade_premium_confirmado_{user_id}', user_id)
+                print(f"[Stripe Webhook] Usuário {user_id} promovido a SENTINELA PRO!")
+                send_audit_log(f'upgrade_sentinela_pro_confirmado_{user_id}', user_id)
             except Exception as e:
-                print(f"[Stripe Webhook] Erro ao persistir premium no banco: {e}")
-                return jsonify({'error': 'Erro ao atualizar banco de dados'}), 500
+                print(f"[Stripe Webhook] Erro ao persistir no banco: {e}")
+                return jsonify({'error': 'Erro ao atualizar banco'}), 500
 
-    # Cancelamento de assinatura
     elif event_type in ['customer.subscription.deleted', 'customer.subscription.paused']:
         subscription_id = data_object.get('id')
         customer_id = data_object.get('customer')
-
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                """UPDATE usuarios 
-                   SET is_premium = 0 
-                   WHERE stripe_subscription_id = %s OR stripe_customer_id = %s""",
-                (subscription_id, customer_id)
-            )
+            cursor.execute("""
+                UPDATE usuarios SET is_premium = 0
+                WHERE stripe_subscription_id = %s OR stripe_customer_id = %s
+            """, (subscription_id, customer_id))
             conn.commit()
             cursor.close()
             conn.close()
-            print(f"[Stripe Webhook] Assinatura {subscription_id} cancelada. Usuário rebaixado para plano gratuito.")
-            send_audit_log(f'cancelamento_premium_assinatura_{subscription_id}')
+            send_audit_log(f'cancelamento_sentinela_pro_{subscription_id}')
         except Exception as e:
-            print(f"[Stripe Webhook] Erro ao desativar assinatura no banco: {e}")
-            return jsonify({'error': 'Erro ao atualizar banco de dados'}), 500
+            print(f"[Stripe Webhook] Erro ao desativar assinatura: {e}")
+            return jsonify({'error': 'Erro ao atualizar banco'}), 500
 
     return jsonify({'received': True}), 200
 
-
-@app.route('/comentar', methods=['POST'])
-def comentar():
-    if 'user_id' not in session: return redirect(url_for('login'))
-    movie_id = request.form['movie_id']
-    texto = request.form['texto']
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO comentarios (usuario_id, tmdb_movie_id, texto) VALUES (%s, %s, %s)", 
-                   (session['user_id'], movie_id, texto))
-    conn.commit()
-    send_audit_log(f'comentar_filme_{movie_id}')
-    cursor.close()
-    conn.close()
-    return redirect(url_for('index'))
-
-@app.route('/apagar_comentario/<int:comment_id>', methods=['POST'])
-def apagar_comentario(comment_id):
-    if 'user_id' not in session: 
-        return "Não autenticado", 401
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    # Descobrir dono do comentário
-    cursor.execute("SELECT usuario_id FROM comentarios WHERE id = %s", (comment_id,))
-    com = cursor.fetchone()
-    
-    if not com:
-        cursor.close()
-        conn.close()
-        return "Comentário não encontrado", 404
-
-    is_owner = (com['usuario_id'] == session['user_id'])
-    
-    # Checar papel do usuário no auth-service
-    try:
-        res = requests.get(f"{AUTH_SERVICE_URL}/api/check-role/{session['user_id']}", timeout=5)
-        if res.status_code == 200:
-            current_role = res.json().get('role', 'usuario')
-        else:
-            current_role = session.get('role', 'usuario')
-    except:
-        current_role = session.get('role', 'usuario')
-
-    # RBAC: dono do comentário ou admin pode apagar
-    if not is_owner and current_role != 'admin':
-        send_audit_log(f'403_apagar_comentario_{comment_id}')
-        cursor.close()
-        conn.close()
-        return "403 Forbidden - Você não tem permissão para apagar este comentário.", 403
-
-    cursor.execute("DELETE FROM comentarios WHERE id = %s", (comment_id,))
-    conn.commit()
-    send_audit_log(f'apagar_comentario_{comment_id}')
-    cursor.close()
-    conn.close()
-    
-    flash('Comentário apagado com sucesso!')
-    return redirect(url_for('index'))
+# ==============================================================
+# AUDITORIA E LOGS (EXCLUSIVO ADMIN)
+# ==============================================================
 
 @app.route('/admin/logs')
 def admin_logs():
-    if 'user_id' not in session: 
+    """
+    Painel de Auditoria de Eventos de Negócio.
+    Acesso restrito a 'admin'. Responde 403 Forbidden para outros papéis.
+    """
+    if 'user_id' not in session:
         return redirect(url_for('login'))
-        
-    try:
-        res = requests.get(f"{AUTH_SERVICE_URL}/api/check-role/{session['user_id']}", timeout=5)
-        current_role = res.json().get('role', 'usuario') if res.status_code == 200 else session.get('role')
-    except:
-        current_role = session.get('role', 'usuario')
-        
+
+    user_id = session['user_id']
+    current_role = get_user_role(user_id)
+
     if current_role != 'admin':
-        send_audit_log('403_acessar_logs')
-        return "403 Forbidden - Apenas administradores podem ver os logs.", 403
+        send_audit_log('403_acessar_logs', user_id)
+        abort(403, description="403 Forbidden - Apenas administradores têm permissão para acessar os logs de auditoria do sistema.")
 
     logs = []
     try:
@@ -636,119 +1114,294 @@ def admin_logs():
         if res.status_code == 200:
             logs = res.json().get('logs', [])
     except Exception as e:
-        flash(f"Erro ao buscar logs: {e}")
-        
+        flash(f"Erro ao consultar serviço de logs: {e}")
+
     return render_template('logs.html', logs=logs)
 
+# ==============================================================
+# API REST DO RECURSO PRINCIPAL (COM SWAGGER)
+# ==============================================================
 
+@app.route('/api/canais', methods=['GET'])
+def api_listar_canais():
+    """
+    Lista todos os canais de rádio disponíveis no OpenWave
+    ---
+    tags:
+      - Canais de Rádio
+    parameters:
+      - name: categoria
+        in: query
+        type: string
+        description: Filtro opcional por categoria
+      - name: status
+        in: query
+        type: string
+        description: Filtro opcional por status (online/offline)
+    responses:
+      200:
+        description: Lista de canais retornada com sucesso
+    """
+    categoria = request.args.get('categoria')
+    status = request.args.get('status')
 
-@app.route('/perfil/<int:user_id>', methods=['GET', 'POST'])
-def perfil(user_id):
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-        
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
-    # 1. Recuperar dados do usuário (incluindo status premium)
-    cursor.execute("SELECT id, nome, email, bio, avatar_url, is_premium FROM usuarios WHERE id = %s", (user_id,))
-    usuario = cursor.fetchone()
-    if not usuario:
-        cursor.close()
-        conn.close()
-        return "Usuário não encontrado", 404
+    query = "SELECT c.*, u.nome as feeder_nome FROM canais c JOIN usuarios u ON c.usuario_id = u.id WHERE 1=1"
+    params = []
+    if categoria:
+        query += " AND c.categoria = %s"
+        params.append(categoria)
+    if status:
+        query += " AND c.status = %s"
+        params.append(status)
+    query += " ORDER BY c.id DESC"
 
-    # 2. Se for POST, editar perfil (Acesso apenas do dono)
-    is_owner = (session['user_id'] == user_id)
-    if is_owner:
-        session['is_premium'] = bool(usuario.get('is_premium', 0))
-    
-    if request.method == 'POST':
-        if not is_owner:
-            send_audit_log(f'403_editar_perfil_{user_id}')
-            return "403 Forbidden - Você não tem permissão para editar este perfil.", 403
-            
-        nome = request.form.get('nome') or usuario['nome']
-        bio = request.form.get('bio')
-        foto = request.files.get('foto')
-        
-        avatar_url = usuario['avatar_url']
-        
-        # Validar arquivo
-        if foto and foto.filename:
-            if not allowed_file(foto.filename):
-                flash("Tipo de arquivo inválido. Apenas imagens (png, jpg, jpeg, gif, webp).")
-                return redirect(url_for('perfil', user_id=user_id))
-            
-            # Limite de tamanho (2MB)
-            file_data = foto.read()
-            if len(file_data) > 2 * 1024 * 1024:
-                flash("A imagem deve ter no máximo 2MB.")
-                return redirect(url_for('perfil', user_id=user_id))
-                
-            # Preparar upload MinIO
-            filename = secure_filename(foto.filename)
-            ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-            object_name = f"avatar_{user_id}_{uuid.uuid4().hex}.{ext}"
-            
-            try:
-                if not minio_client.bucket_exists(MINIO_BUCKET):
-                    minio_client.make_bucket(MINIO_BUCKET)
-                    import json
-                    policy = {
-                        "Version": "2012-10-17",
-                        "Statement": [{
-                            "Effect": "Allow",
-                            "Principal": {"AWS": ["*"]},
-                            "Action": ["s3:GetObject"],
-                            "Resource": [f"arn:aws:s3:::{MINIO_BUCKET}/*"]
-                        }]
-                    }
-                    minio_client.set_bucket_policy(MINIO_BUCKET, json.dumps(policy))
-
-                minio_client.put_object(
-                    MINIO_BUCKET,
-                    object_name,
-                    io.BytesIO(file_data),
-                    len(file_data),
-                    content_type=foto.content_type
-                )
-                # URL roteada pelo próprio Flask para contornar o firewall
-                avatar_url = url_for('serve_avatar', filename=object_name)
-            except Exception as e:
-                flash(f"Erro ao salvar imagem no MinIO: {e}")
-                return redirect(url_for('perfil', user_id=user_id))
-                
-        # Atualizar banco
-        cursor.execute("UPDATE usuarios SET nome = %s, bio = %s, avatar_url = %s WHERE id = %s", (nome, bio, avatar_url, user_id))
-        conn.commit()
-        session['nome'] = nome
-        session['avatar_url'] = avatar_url
-        send_audit_log(f'editar_perfil_{user_id}')
-        flash("Perfil atualizado com sucesso!")
-        return redirect(url_for('perfil', user_id=user_id))
-        
-    # 3. Recuperar favoritos do usuário
-    cursor.execute("SELECT tmdb_movie_id, titulo, poster_path FROM favoritos WHERE usuario_id = %s", (user_id,))
-    favoritos_lista = cursor.fetchall()
-    
+    cursor.execute(query, tuple(params))
+    canais = cursor.fetchall()
     cursor.close()
     conn.close()
-    
-    return render_template('perfil.html', usuario=usuario, favoritos=favoritos_lista, is_owner=is_owner)
+    return jsonify({'success': True, 'canais': canais}), 200
 
-@app.route('/avatar/<filename>')
-def serve_avatar(filename):
+@app.route('/api/canais', methods=['POST'])
+def api_criar_canal():
+    """
+    Cadastra um novo canal de rádio na plataforma
+    ---
+    tags:
+      - Canais de Rádio
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            nome:
+              type: string
+            frequencia:
+              type: string
+            categoria:
+              type: string
+            cidade:
+              type: string
+            estado:
+              type: string
+            descricao:
+              type: string
+            stream_url:
+              type: string
+    responses:
+      201:
+        description: Canal criado com sucesso
+      401:
+        description: Autenticação requerida
+      403:
+        description: Apenas feeders e administradores podem cadastrar canais
+      400:
+        description: Dados insuficientes
+    """
+    user_id = session.get('user_id') or request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({'error': 'Não autenticado'}), 401
+
+    user_role = get_user_role(int(user_id))
+    if user_role not in ['feeder', 'admin']:
+        send_audit_log('403_api_criar_canal', user_id)
+        return jsonify({'error': '403 Forbidden - Papel não autorizado a cadastrar canais'}), 403
+
+    data = request.get_json() or {}
+    nome = data.get('nome')
+    frequencia = data.get('frequencia')
+    categoria = data.get('categoria', 'Resgate & Bombeiros')
+    cidade = data.get('cidade')
+    estado = (data.get('estado') or 'SP').upper()
+    descricao = data.get('descricao', '')
+    stream_url = data.get('stream_url', '')
+
+    if not nome or not frequencia or not cidade:
+        return jsonify({'error': 'Campos nome, frequencia e cidade são obrigatórios'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        response = minio_client.get_object(MINIO_BUCKET, filename)
-        file_data = response.read()
-        response.close()
-        response.release_conn()
-        return send_file(io.BytesIO(file_data), mimetype='image/jpeg')
+        cursor.execute("""
+            INSERT INTO canais (usuario_id, nome, frequencia, categoria, cidade, estado, descricao, stream_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (user_id, nome, frequencia, categoria, cidade, estado, descricao, stream_url))
+        conn.commit()
+        canal_id = cursor.lastrowid
+        send_audit_log(f'canal_criado_{canal_id}', user_id)
+        return jsonify({'success': True, 'canal_id': canal_id, 'message': 'Canal criado com sucesso'}), 201
     except Exception as e:
-        print(f"Erro ao buscar avatar no MinIO: {e}")
-        abort(404)
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/canais/<int:canal_id>', methods=['GET'])
+def api_detalhar_canal(canal_id):
+    """
+    Retorna os dados detalhados de um canal de rádio e suas ocorrências gravadas
+    ---
+    tags:
+      - Canais de Rádio
+    parameters:
+      - name: canal_id
+        in: path
+        type: integer
+        required: true
+    responses:
+      200:
+        description: Detalhes do canal
+      404:
+        description: Canal não encontrado
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT c.*, u.nome as feeder_nome
+        FROM canais c JOIN usuarios u ON c.usuario_id = u.id
+        WHERE c.id = %s
+    """, (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        return jsonify({'error': 'Canal não encontrado'}), 404
+
+    cursor.execute("SELECT * FROM gravacoes_ocorrencias WHERE canal_id = %s ORDER BY data_hora_ocorrencia DESC", (canal_id,))
+    gravacoes = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    canal['gravacoes'] = gravacoes
+    return jsonify({'success': True, 'canal': canal}), 200
+
+@app.route('/api/canais/<int:canal_id>', methods=['PUT'])
+def api_editar_canal(canal_id):
+    """
+    Atualiza os dados de um canal de rádio
+    ---
+    tags:
+      - Canais de Rádio
+    parameters:
+      - name: canal_id
+        in: path
+        type: integer
+        required: true
+      - in: body
+        name: body
+        schema:
+          type: object
+    responses:
+      200:
+        description: Canal atualizado
+      403:
+        description: Apenas o dono ou administrador podem editar este canal
+      404:
+        description: Canal não encontrado
+    """
+    user_id = session.get('user_id') or request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({'error': 'Não autenticado'}), 401
+
+    user_role = get_user_role(int(user_id))
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM canais WHERE id = %s", (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        return jsonify({'error': 'Canal não encontrado'}), 404
+
+    # Requisito 6: Isolamento por usuário (multi-tenancy)
+    if canal['usuario_id'] != int(user_id) and user_role != 'admin':
+        cursor.close()
+        conn.close()
+        send_audit_log(f'403_api_editar_canal_alheio_{canal_id}', user_id)
+        return jsonify({'error': '403 Forbidden - Você não tem permissão para alterar canais de outro operador'}), 403
+
+    data = request.get_json() or {}
+    nome = data.get('nome', canal['nome'])
+    frequencia = data.get('frequencia', canal['frequencia'])
+    categoria = data.get('categoria', canal['categoria'])
+    cidade = data.get('cidade', canal['cidade'])
+    estado = (data.get('estado') or canal['estado']).upper()
+    descricao = data.get('descricao', canal['descricao'])
+    status = data.get('status', canal['status'])
+
+    try:
+        cursor.execute("""
+            UPDATE canais SET nome = %s, frequencia = %s, categoria = %s, cidade = %s, estado = %s, descricao = %s, status = %s
+            WHERE id = %s
+        """, (nome, frequencia, categoria, cidade, estado, descricao, status, canal_id))
+        conn.commit()
+        send_audit_log(f'canal_atualizado_{canal_id}', user_id)
+        return jsonify({'success': True, 'message': 'Canal atualizado com sucesso'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/canais/<int:canal_id>', methods=['DELETE'])
+def api_remover_canal(canal_id):
+    """
+    Remove um canal de rádio
+    ---
+    tags:
+      - Canais de Rádio
+    parameters:
+      - name: canal_id
+        in: path
+        type: integer
+        required: true
+    responses:
+      200:
+        description: Canal removido com sucesso
+      403:
+        description: Apenas o dono ou administrador podem remover este canal
+      404:
+        description: Canal não encontrado
+    """
+    user_id = session.get('user_id') or request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({'error': 'Não autenticado'}), 401
+
+    user_role = get_user_role(int(user_id))
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM canais WHERE id = %s", (canal_id,))
+    canal = cursor.fetchone()
+
+    if not canal:
+        cursor.close()
+        conn.close()
+        return jsonify({'error': 'Canal não encontrado'}), 404
+
+    # Requisito 6: Isolamento por usuário
+    if canal['usuario_id'] != int(user_id) and user_role != 'admin':
+        cursor.close()
+        conn.close()
+        send_audit_log(f'403_api_remover_canal_alheio_{canal_id}', user_id)
+        return jsonify({'error': '403 Forbidden - Você não tem permissão para remover canais de outro operador'}), 403
+
+    try:
+        cursor.execute("DELETE FROM canais WHERE id = %s", (canal_id,))
+        conn.commit()
+        send_audit_log(f'canal_removido_{canal_id}', user_id)
+        return jsonify({'success': True, 'message': 'Canal removido com sucesso'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-

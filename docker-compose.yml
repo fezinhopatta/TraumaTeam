@@ -7,7 +7,6 @@ services:
     ports:
       - "${PORTA_ALUNO:-5000}:5000"
     environment:
-      - TMDB_API_KEY=${TMDB_API_KEY}
       - DB_HOST=${DB_HOST}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
@@ -20,7 +19,7 @@ services:
       - MINIO_PORT=${MINIO_PORT:-9000}
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
-      - MINIO_BUCKET=${MINIO_BUCKET:-perfil-fotos}
+      - MINIO_BUCKET=${MINIO_BUCKET:-openwave-midias}
       - MINIO_PUBLIC_URL=${MINIO_PUBLIC_URL:-http://localhost:9010}
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
       - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
@@ -47,7 +46,7 @@ services:
       - MAIL_PORT=${MAIL_PORT:-2525}
       - MAIL_USERNAME=${MAIL_USERNAME}
       - MAIL_PASSWORD=${MAIL_PASSWORD}
-      - MAIL_FROM=${MAIL_FROM:-no-reply@tomhanks.local}
+      - MAIL_FROM=${MAIL_FROM:-no-reply@openwave.local}
       - APP_URL=${APP_URL:-http://localhost:${PORTA_ALUNO:-5000}}
       - LOG_SERVICE_URL=http://log-service:5000
     networks:
@@ -72,16 +71,15 @@ services:
     networks:
       - app-network
 
-  # MinIO - Object Storage S3-compatível para arquivos de usuário (fotos de perfil)
+  # MinIO - Object Storage S3 para arquivos de áudio de ocorrências e imagens de canais
   # Console web: http://localhost:9011 | API S3: http://localhost:9010
   minio:
     image: elestio/minio:latest
-    #container_name: tomhanks_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     ports:
-      - "${MINIO_API_PORT:-9010}:9000" # API S3 mapeada para porta 9010 externa (evita conflito com a porta 9000 do Portainer)
-      - "${MINIO_CONSOLE_PORT:-9011}:9001" # Console web do MinIO na porta 9011 externa
+      - "${MINIO_API_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}

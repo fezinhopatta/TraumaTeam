@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if modo == 'novo' %}Novo Canal de Rádio{% else %}Editar Canal{% endif %} — OpenWave</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="theme-dark">
+
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span></span>
+            </a>
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Cancelar</a>
+        </div>
+    </header>
+
+    <main class="container py-5" style="max-width: 720px;">
+        <div class="card bg-surface border-dark p-4 shadow-lg">
+            <div class="d-flex align-items-center gap-2 mb-3 text-cyan">
+                <i class="bi bi-broadcast fs-3"></i>
+                <h3 class="mb-0 fw-bold text-light">
+                    {% if modo == 'novo' %}Cadastrar Canal de Rádio{% else %}Editar Canal de Rádio{% endif %}
+                </h3>
+            </div>
+            <p class="text-secondary small mb-4">
+                Preencha os parâmetros de transmissão da sua estação receptora. Apenas feeders e administradores podem cadastrar frequências operacionais.
+            </p>
+
+            <form method="POST" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label class="form-label text-light small fw-bold">Nome do Canal / Estação *</label>
+                    <input type="text" name="nome" class="form-control bg-dark border-dark text-light" placeholder="Ex: Bombeiros & SAMU - Região Metropolitana" value="{{ canal.nome if canal else '' }}" required>
+                </div>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label text-light small fw-bold">Frequência e Modulação *</label>
+                        <input type="text" name="frequencia" class="form-control bg-dark border-dark text-light" placeholder="Ex: 193.000 MHz (VHF)" value="{{ canal.frequencia if canal else '' }}" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-light small fw-bold">Categoria *</label>
+                        <select name="categoria" class="form-select bg-dark border-dark text-light" required>
+                            <option value="Resgate & Bombeiros" {% if canal and canal.categoria == 'Resgate & Bombeiros' %}selected{% endif %}>Resgate & Bombeiros</option>
+                            <option value="Polícia / Patrulha" {% if canal and canal.categoria == 'Polícia / Patrulha' %}selected{% endif %}>Polícia / Patrulha</option>
+                            <option value="Rodovias" {% if canal and canal.categoria == 'Rodovias' %}selected{% endif %}>Rodovias</option>
+                            <option value="Defesa Civil" {% if canal and canal.categoria == 'Defesa Civil' %}selected{% endif %}>Defesa Civil</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-8">
+                        <label class="form-label text-light small fw-bold">Cidade Coberta *</label>
+                        <input type="text" name="cidade" class="form-control bg-dark border-dark text-light" placeholder="Ex: São Paulo" value="{{ canal.cidade if canal else '' }}" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-light small fw-bold">Estado (UF) *</label>
+                        <input type="text" name="estado" maxlength="2" class="form-control bg-dark border-dark text-light text-uppercase" placeholder="SP" value="{{ canal.estado if canal else 'SP' }}" required>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label text-light small fw-bold">URL do Fluxo de Áudio (Stream / Icecast / MP3)</label>
+                    <input type="url" name="stream_url" class="form-control bg-dark border-dark text-light" placeholder="https://stream.openwave.local/live/canal.mp3" value="{{ canal.stream_url if canal else '' }}">
+                    <div class="text-secondary small mt-1">Opcional. Se vazio, o reprodutor utilizará arquivos de despachos arquivados.</div>
+                </div>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label text-light small fw-bold">Status Operacional</label>
+                        <select name="status" class="form-select bg-dark border-dark text-light">
+                            <option value="online" {% if canal and canal.status == 'online' %}selected{% endif %}>Online (Transmitindo)</option>
+                            <option value="offline" {% if canal and canal.status == 'offline' %}selected{% endif %}>Offline (Inativo)</option>
+                            <option value="manutencao" {% if canal and canal.status == 'manutencao' %}selected{% endif %}>Manutenção da Antena</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-light small fw-bold">Emblema / Logo da Estação (MinIO)</label>
+                        <input type="file" name="icone" accept="image/*" class="form-control bg-dark border-dark text-light">
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label text-light small fw-bold">Descrição Operacional</label>
+                    <textarea name="descricao" rows="3" class="form-control bg-dark border-dark text-light" placeholder="Área de cobertura, repetidora de enlace, regras de escuta...">{{ canal.descricao if canal else '' }}</textarea>
+                </div>
+
+                <div class="d-flex justify-content-end gap-2">
+                    <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Cancelar</a>
+                    <button type="submit" class="btn btn-cyan px-4 fw-bold">
+                        {% if modo == 'novo' %}<i class="bi bi-check-lg me-1"></i> Criar Canal de Rádio{% else %}<i class="bi bi-save me-1"></i> Salvar Alterações{% endif %}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-auto">
+        <div class="container">
+            <p class="mb-0">📡 OpenWave — Projeto orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a></p>
+        </div>
+    </footer>
+
+</body>
+</html>

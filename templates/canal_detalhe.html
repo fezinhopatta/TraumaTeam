@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ canal.nome }} ({{ canal.frequencia }}) — OpenWave</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="theme-dark">
+
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span></span>
+            </a>
+            <div class="d-flex align-items-center gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Voltar aos Canais</a>
+                <a href="{{ url_for('perfil', user_id=session.get('user_id')) }}" class="btn btn-outline-cyan btn-sm">Meu Perfil</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container py-4">
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert alert-cyan alert-dismissible fade show" role="alert">
+                        <i class="bi bi-info-circle-fill me-2"></i> {{ msg }}
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Cabeçalho do Canal -->
+        <div class="card bg-surface border-dark p-4 mb-4">
+            <div class="row align-items-center g-3">
+                <div class="col-auto">
+                    {% if canal.icone_url %}
+                        <img src="{{ canal.icone_url }}" alt="Emblema" class="rounded-circle" style="width: 72px; height: 72px; object-fit: cover;">
+                    {% else %}
+                        <div class="icon-circle text-cyan fs-2" style="width: 72px; height: 72px;"><i class="bi bi-broadcast-pin"></i></div>
+                    {% endif %}
+                </div>
+                <div class="col">
+                    <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+                        <span class="badge bg-freq text-cyan font-monospace fs-6 px-3 py-1">{{ canal.frequencia }}</span>
+                        {% if canal.status == 'online' %}
+                            <span class="badge bg-success-subtle text-success border border-success-subtle d-flex align-items-center gap-1">
+                                <span class="status-dot-pulse"></span> TRANSMISSÃO ONLINE
+                            </span>
+                        {% else %}
+                            <span class="badge bg-secondary">OFFLINE</span>
+                        {% endif %}
+                        <span class="badge bg-dark border border-secondary text-secondary">{{ canal.categoria }}</span>
+                    </div>
+                    <h2 class="text-light fw-bold mb-1">{{ canal.nome }}</h2>
+                    <div class="text-secondary small">
+                        <i class="bi bi-geo-alt-fill text-cyan me-1"></i> {{ canal.cidade }} / {{ canal.estado }} &bull;
+                        Estação Transmissora: <strong>{{ canal.feeder_nome }}</strong> (Feeder #{{ canal.usuario_id }})
+                    </div>
+                </div>
+                <div class="col-auto d-flex flex-wrap gap-2">
+                    {% if is_favorito %}
+                        <form action="{{ url_for('desfavoritar_canal', canal_id=canal.id) }}" method="POST">
+                            <button type="submit" class="btn btn-gold btn-sm"><i class="bi bi-star-fill me-1"></i> Canal Favoritado</button>
+                        </form>
+                    {% else %}
+                        <form action="{{ url_for('favoritar_canal', canal_id=canal.id) }}" method="POST">
+                            <button type="submit" class="btn btn-outline-secondary text-light btn-sm"><i class="bi bi-star me-1"></i> Favoritar</button>
+                        </form>
+                    {% endif %}
+
+                    {% if can_manage %}
+                        <a href="{{ url_for('canal_editar', canal_id=canal.id) }}" class="btn btn-outline-warning btn-sm"><i class="bi bi-pencil me-1"></i> Editar</a>
+                        <form action="{{ url_for('canal_remover', canal_id=canal.id) }}" method="POST" onsubmit="return confirm('Confirma a remoção permanente deste canal de rádio?');" style="display:inline;">
+                            <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash me-1"></i> Excluir</button>
+                        </form>
+                    {% endif %}
+                </div>
+            </div>
+
+            <hr class="border-dark my-3">
+            <p class="text-secondary mb-0">{{ canal.descricao or 'Canal de áudio dedicado à captação de chamadas de emergência e apoio logístico na região.' }}</p>
+        </div>
+
+        <div class="row g-4">
+            <!-- Player Principal -->
+            <div class="col-lg-7">
+                <div class="card bg-surface border-dark p-4 mb-4">
+                    <h4 class="text-light mb-3 d-flex align-items-center gap-2">
+                        <i class="bi bi-soundwave text-cyan"></i> Receptor de Áudio em Tempo Real
+                    </h4>
+                    <div class="p-3 bg-dark rounded border border-dark text-center mb-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2 text-secondary small">
+                            <span>STATUS DO RECEPTOR</span>
+                            {% if is_premium %}
+                                <span class="badge bg-gold text-dark fw-bold">PRO &bull; 0s Latência</span>
+                            {% else %}
+                                <span class="badge bg-secondary">FREE &bull; 10min Delay</span>
+                            {% endif %}
+                        </div>
+                        <audio controls style="width: 100%;" class="my-2">
+                            <source src="{{ canal.stream_url or url_for('serve_audio', filename='gravacoes/demo.mp3') }}" type="audio/mpeg">
+                            Seu navegador não suporta streaming de áudio.
+                        </audio>
+                        <div class="text-secondary" style="font-size: 0.8em;">
+                            Frequência sintonizada via RTL-SDR / Scanner local do feeder.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Histórico de Ocorrências Gravadas -->
+                <div class="card bg-surface border-dark p-4">
+                    <h4 class="text-light mb-3 d-flex align-items-center gap-2">
+                        <i class="bi bi-cassette text-cyan"></i> Despachos e Gravações de Ocorrências
+                    </h4>
+
+                    {% if gravacoes %}
+                        <div class="list-group list-group-flush bg-transparent">
+                            {% for g in gravacoes %}
+                                <div class="list-group-item bg-dark border-dark rounded mb-2 p-3 text-light">
+                                    <div class="d-flex justify-content-between align-items-start mb-1">
+                                        <h6 class="mb-0 text-cyan fw-bold"><i class="bi bi-file-earmark-music me-1"></i> {{ g.titulo }}</h6>
+                                        <span class="badge bg-secondary font-monospace">{{ g.duracao_segundos }}s</span>
+                                    </div>
+                                    <div class="text-secondary small mb-2">
+                                        Registrado em: {{ g.data_hora_ocorrencia }} por {{ g.autor_nome }}
+                                    </div>
+                                    {% if g.descricao %}
+                                        <p class="small text-secondary mb-2">{{ g.descricao }}</p>
+                                    {% endif %}
+                                    <audio controls preload="none" style="width: 100%; height: 32px;">
+                                        <source src="{{ g.audio_url }}" type="audio/mpeg">
+                                    </audio>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="text-center py-4 text-secondary">
+                            <i class="bi bi-mic-mute fs-3 d-block mb-2"></i>
+                            Nenhuma gravação de áudio anexada a este canal até o momento.
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Upload de Gravação no MinIO (Apenas Dono ou Admin) -->
+            <div class="col-lg-5">
+                {% if can_manage %}
+                    <div class="card bg-surface border-cyan p-4">
+                        <div class="d-flex align-items-center gap-2 text-cyan mb-2">
+                            <i class="bi bi-cloud-arrow-up-fill fs-4"></i>
+                            <h5 class="mb-0 fw-bold">Publicar Gravação de Despacho</h5>
+                        </div>
+                        <p class="text-secondary small">
+                            Faça upload do trecho de áudio captado pelo seu scanner (.mp3, .ogg, .wav). O arquivo será persistido no <strong>MinIO S3</strong>.
+                        </p>
+
+                        <form action="{{ url_for('gravar_ocorrencia', canal_id=canal.id) }}" method="POST" enctype="multipart/form-data">
+                            <div class="mb-3">
+                                <label class="form-label text-light small fw-bold">Título da Ocorrência *</label>
+                                <input type="text" name="titulo" class="form-control bg-dark border-dark text-light" placeholder="Ex: Despacho Resgate Rodovia KM 48" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label text-light small fw-bold">Arquivo de Áudio (.mp3, .ogg, .wav) *</label>
+                                <input type="file" name="audio" accept=".mp3,.ogg,.wav,.m4a" class="form-control bg-dark border-dark text-light" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label text-light small fw-bold">Duração Estimada (segundos)</label>
+                                <input type="number" name="duracao_segundos" value="60" class="form-control bg-dark border-dark text-light">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label text-light small fw-bold">Notas Operacionais / Transcrição</label>
+                                <textarea name="descricao" rows="2" class="form-control bg-dark border-dark text-light" placeholder="Detalhes do chamado, viaturas acionadas..."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-cyan w-100 fw-bold">
+                                <i class="bi bi-upload me-1"></i> Enviar Gravação para MinIO
+                            </button>
+                        </form>
+                    </div>
+                {% else %}
+                    <div class="card bg-surface border-dark p-4 text-center">
+                        <i class="bi bi-broadcast text-secondary fs-1 mb-2"></i>
+                        <h6 class="text-light">Transmissão Operada por Feeder</h6>
+                        <p class="text-secondary small mb-0">
+                            Apenas a estação <strong>{{ canal.feeder_nome }}</strong> ou administradores podem subir arquivos de áudio oficiais gravados deste canal.
+                        </p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-5">
+        <div class="container">
+            <p class="mb-0">📡 OpenWave — Projeto orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a></p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -12,7 +12,13 @@ from flasgger import Swagger
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-swagger = Swagger(app, template={'info': {'title': 'Auth Service API', 'version': '1.0.0'}})
+swagger = Swagger(app, template={
+    'info': {
+        'title': 'OpenWave Auth Service API',
+        'version': '2.0.0',
+        'description': 'Serviço de Autenticação, RBAC (admin, feeder, listener) e Recuperação de Senha do OpenWave.'
+    }
+})
 app.secret_key = os.getenv('SECRET_KEY', 'auth_default_secret')
 LOG_SERVICE_URL = os.getenv('LOG_SERVICE_URL', 'http://log-service:5000')
 
@@ -24,7 +30,7 @@ def send_audit_log(usuario_id, acao):
             'ip_origem': request.remote_addr
         }, timeout=2)
     except Exception as e:
-        print(f"Erro ao enviar log: {e}")
+        print(f"[Auth Service] Erro ao enviar log: {e}")
 
 def get_db_connection():
     return mysql.connector.connect(
@@ -35,61 +41,49 @@ def get_db_connection():
     )
 
 def init_db():
-    """Garante que as tabelas usuarios e reset_tokens existam com o esquema correto."""
+    """Garante que as tabelas de usuarios, tokens e do domínio OpenWave existam."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Tabela usuarios
+        # Tabela usuarios (RBAC: admin, feeder, listener)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
                 email VARCHAR(100) NOT NULL UNIQUE,
                 senha_hash VARCHAR(255) NOT NULL,
-                role VARCHAR(20) NOT NULL DEFAULT 'usuario',
+                role VARCHAR(20) NOT NULL DEFAULT 'listener',
                 bio TEXT,
-                avatar_url VARCHAR(255)
-            ) ENGINE=InnoDB;
+                avatar_url VARCHAR(255),
+                is_premium BOOLEAN NOT NULL DEFAULT 0,
+                stripe_customer_id VARCHAR(255),
+                stripe_subscription_id VARCHAR(255),
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """)
         
-        # Adiciona a coluna 'role' caso a tabela já existia sem ela
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'usuario'")
-            conn.commit()
-        except mysql.connector.Error:
-            pass # Coluna já existe
+        # Garante migração de colunas caso tabela já existisse
+        for col_def in [
+            "ALTER TABLE usuarios ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'listener'",
+            "ALTER TABLE usuarios ADD COLUMN bio TEXT",
+            "ALTER TABLE usuarios ADD COLUMN avatar_url VARCHAR(255)",
+            "ALTER TABLE usuarios ADD COLUMN is_premium BOOLEAN NOT NULL DEFAULT 0",
+            "ALTER TABLE usuarios ADD COLUMN stripe_customer_id VARCHAR(255)",
+            "ALTER TABLE usuarios ADD COLUMN stripe_subscription_id VARCHAR(255)",
+            "ALTER TABLE usuarios ADD COLUMN criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ]:
+            try:
+                cursor.execute(col_def)
+                conn.commit()
+            except mysql.connector.Error:
+                pass
 
-        # Adiciona a coluna 'bio' e 'avatar_url' caso a tabela já existia sem ela
+        # Atualiza roles legados ('usuario' -> 'listener') se existirem
         try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN bio TEXT")
+            cursor.execute("UPDATE usuarios SET role = 'listener' WHERE role = 'usuario'")
             conn.commit()
-        except mysql.connector.Error:
-            pass
-
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN avatar_url VARCHAR(255)")
-            conn.commit()
-        except mysql.connector.Error:
-            pass
-
-        # Adiciona colunas para controle do Plano Premium Stripe
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN is_premium BOOLEAN NOT NULL DEFAULT 0")
-            conn.commit()
-        except mysql.connector.Error:
-            pass
-
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN stripe_customer_id VARCHAR(255)")
-            conn.commit()
-        except mysql.connector.Error:
-            pass
-
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN stripe_subscription_id VARCHAR(255)")
-            conn.commit()
-        except mysql.connector.Error:
+        except Exception:
             pass
 
         # Tabela reset_tokens
@@ -102,17 +96,72 @@ def init_db():
                 expira_em DATETIME NOT NULL,
                 usado BOOLEAN NOT NULL DEFAULT 0,
                 FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB;
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """)
         conn.commit()
+
+        # Tabelas principais do domínio OpenWave
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canais (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                nome VARCHAR(120) NOT NULL,
+                frequencia VARCHAR(60) NOT NULL,
+                categoria VARCHAR(50) NOT NULL,
+                cidade VARCHAR(100) NOT NULL,
+                estado VARCHAR(2) NOT NULL,
+                descricao TEXT,
+                status VARCHAR(20) NOT NULL DEFAULT 'online',
+                stream_url VARCHAR(255),
+                icone_url VARCHAR(255),
+                delay_segundos INT NOT NULL DEFAULT 600,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        conn.commit()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gravacoes_ocorrencias (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                canal_id INT NOT NULL,
+                usuario_id INT NOT NULL,
+                titulo VARCHAR(150) NOT NULL,
+                audio_url VARCHAR(255) NOT NULL,
+                duracao_segundos INT NOT NULL DEFAULT 60,
+                data_hora_ocorrencia DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                descricao TEXT,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (canal_id) REFERENCES canais(id) ON DELETE CASCADE,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        conn.commit()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canais_favoritos (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                canal_id INT NOT NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_user_canal (usuario_id, canal_id),
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                FOREIGN KEY (canal_id) REFERENCES canais(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        conn.commit()
+
         cursor.close()
         conn.close()
-        print("[Auth Service] Banco de dados inicializado com sucesso.")
+        print("[Auth Service] Esquema OpenWave inicializado com sucesso.")
     except Exception as e:
         print(f"[Auth Service] Erro ao inicializar banco de dados: {e}")
 
-# Executa inicialização do banco ao carregar
-init_db()
+try:
+    init_db()
+except Exception as e:
+    print(f"[Auth Service] Aviso na inicialização: {e}")
 
 def send_reset_email(to_email, reset_url):
     """Envia o e-mail de redefinição de senha via Mailtrap/Brevo SMTP."""
@@ -120,33 +169,37 @@ def send_reset_email(to_email, reset_url):
     mail_port = int(os.getenv('MAIL_PORT', 2525))
     mail_user = os.getenv('MAIL_USERNAME', '')
     mail_pass = os.getenv('MAIL_PASSWORD', '')
-    mail_from = os.getenv('MAIL_FROM', 'no-reply@tomhanks.local')
+    mail_from = os.getenv('MAIL_FROM', 'no-reply@openwave.local')
 
     print(f"[Auth Service] Enviando e-mail de redefinição para: {to_email}")
     print(f"[Auth Service] Link de redefinição: {reset_url}")
 
     if not mail_user or not mail_pass:
-        print("[Auth Service] Credenciais SMTP não configuradas. Link apenas impresso nos logs.")
+        print("[Auth Service] Credenciais SMTP não configuradas. Link apenas exibido nos logs.")
         return True
 
     try:
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Redefinição de Senha - Catálogo Tom Hanks'
+        msg['Subject'] = 'Redefinição de Senha - OpenWave'
         msg['From'] = mail_from
         msg['To'] = to_email
 
-        text_content = f"Olá!\n\nVocê solicitou a redefinição da sua senha.\nClique no link abaixo para criar uma nova senha (válido por 30 minutos):\n{reset_url}\n\nSe você não solicitou esta alteração, ignore este e-mail."
+        text_content = f"Olá!\n\nVocê solicitou a redefinição de sua senha na plataforma OpenWave.\nClique no link abaixo para criar uma nova senha (válido por 30 minutos):\n{reset_url}\n\nSe você não solicitou esta alteração, ignore este e-mail."
         html_content = f"""
         <html>
-          <body>
-            <h2>Redefinição de Senha</h2>
-            <p>Você solicitou a redefinição de sua senha no sistema <strong>Catálogo Tom Hanks</strong>.</p>
-            <p>Clique no botão abaixo para redefinir sua senha (válido por 30 minutos):</p>
-            <p><a href="{reset_url}" style="padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px;">Redefinir Senha</a></p>
-            <p>Ou copie e cole o seguinte link no seu navegador:</p>
-            <p><a href="{reset_url}">{reset_url}</a></p>
-            <br>
-            <p><small>Se você não solicitou a alteração, ignore este e-mail.</small></p>
+          <body style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #e2e8f0; padding: 20px;">
+            <div style="max-width: 600px; margin: 0 auto; background-color: #161e2e; padding: 30px; border-radius: 8px; border: 1px solid #2d3748;">
+              <h2 style="color: #38bdf8;">📡 OpenWave — Rede de Rádio Regional</h2>
+              <p>Você solicitou a redefinição de sua senha no sistema <strong>OpenWave</strong>.</p>
+              <p>Clique no botão abaixo para criar uma nova senha com segurança (válido por 30 minutos):</p>
+              <p style="margin: 25px 0;">
+                <a href="{reset_url}" style="padding: 12px 24px; background-color: #0284c7; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Redefinir Senha</a>
+              </p>
+              <p style="color: #94a3b8; font-size: 0.9em;">Se o botão não funcionar, copie e cole este link no navegador:</p>
+              <p style="word-break: break-all;"><a href="{reset_url}" style="color: #38bdf8;">{reset_url}</a></p>
+              <hr style="border: 0; border-top: 1px solid #334155; margin: 20px 0;">
+              <p style="color: #64748b; font-size: 0.8em;">Se você não solicitou esta redefinição, desconsidere esta mensagem com segurança.</p>
+            </div>
           </body>
         </html>
         """
@@ -159,7 +212,7 @@ def send_reset_email(to_email, reset_url):
             server.login(mail_user, mail_pass)
             server.sendmail(mail_from, [to_email], msg.as_string())
             
-        print("[Auth Service] E-mail enviado com sucesso via SMTP Mailtrap!")
+        print("[Auth Service] E-mail de redefinição enviado com sucesso via SMTP!")
         return True
     except Exception as e:
         print(f"[Auth Service] Erro ao enviar e-mail via SMTP: {e}")
@@ -168,7 +221,7 @@ def send_reset_email(to_email, reset_url):
 @app.route('/api/register', methods=['POST'])
 def register():
     """
-    Registra um novo usuário no sistema
+    Registra um novo usuário no OpenWave com papel 'listener' ou 'feeder'.
     ---
     tags:
       - Autenticação
@@ -187,11 +240,13 @@ def register():
               type: string
             role:
               type: string
+              enum: ['listener', 'feeder']
+              default: 'listener'
     responses:
       201:
         description: Usuário registrado com sucesso
       400:
-        description: Erro de validação ou email já existente
+        description: Erro de validação ou email já cadastrado
       500:
         description: Erro interno
     """
@@ -199,10 +254,16 @@ def register():
     nome = data.get('nome')
     email = data.get('email')
     senha = data.get('senha')
-    role = data.get('role', 'usuario')
+    requested_role = (data.get('role') or 'listener').lower()
+
+    # Apenas 'listener' e 'feeder' podem ser auto-atribuídos no registro público
+    if requested_role not in ['listener', 'feeder']:
+        role = 'listener'
+    else:
+        role = requested_role
 
     if not nome or not email or not senha:
-        return jsonify({'success': False, 'error': 'Preencha todos os campos.'}), 400
+        return jsonify({'success': False, 'error': 'Preencha todos os campos obrigatórios.'}), 400
 
     senha_hash = generate_password_hash(senha)
 
@@ -214,7 +275,13 @@ def register():
             (nome, email, senha_hash, role)
         )
         conn.commit()
-        return jsonify({'success': True, 'message': 'Usuário cadastrado com sucesso.'})
+        user_id = cursor.lastrowid
+        send_audit_log(user_id, f'registro_usuario_{role}')
+        return jsonify({
+            'success': True,
+            'message': 'Conta criada com sucesso no OpenWave.',
+            'user': {'id': user_id, 'nome': nome, 'email': email, 'role': role}
+        }), 201
     except mysql.connector.IntegrityError:
         return jsonify({'success': False, 'error': 'E-mail já cadastrado.'}), 400
     except Exception as e:
@@ -226,7 +293,7 @@ def register():
 @app.route('/api/login', methods=['POST'])
 def login():
     """
-    Autentica um usuário e retorna seus dados
+    Autentica um usuário e retorna dados com papel de negócio e status premium.
     ---
     tags:
       - Autenticação
@@ -245,7 +312,7 @@ def login():
       200:
         description: Login realizado com sucesso
       400:
-        description: Dados insuficientes
+        description: Dados incompletos
       401:
         description: Credenciais inválidas
     """
@@ -263,6 +330,11 @@ def login():
         user = cursor.fetchone()
         
         if user and check_password_hash(user['senha_hash'], senha):
+            role = user.get('role', 'listener')
+            # Tratamento para roles legados
+            if role == 'usuario':
+                role = 'listener'
+
             send_audit_log(user['id'], 'login')
             return jsonify({
                 'success': True,
@@ -270,11 +342,13 @@ def login():
                     'id': user['id'],
                     'nome': user['nome'],
                     'email': user['email'],
-                    'role': user.get('role', 'usuario'),
+                    'role': role,
                     'avatar_url': user.get('avatar_url'),
+                    'bio': user.get('bio'),
                     'is_premium': bool(user.get('is_premium', 0))
                 }
-            })
+            }), 200
+            
         send_audit_log(email, 'tentativa_login_falha')
         return jsonify({'success': False, 'error': 'Credenciais inválidas.'}), 401
     except Exception as e:
@@ -286,7 +360,7 @@ def login():
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
     """
-    Solicita recuperação de senha e envia e-mail com token
+    Solicita recuperação de senha e despacha e-mail seguro com token UUIDv4.
     ---
     tags:
       - Recuperação
@@ -301,7 +375,7 @@ def forgot_password():
               type: string
     responses:
       200:
-        description: E-mail de recuperação enviado (ou falso positivo se não existir)
+        description: E-mail de recuperação enviado (resposta neutra por segurança)
       400:
         description: E-mail não fornecido
     """
@@ -346,7 +420,7 @@ def forgot_password():
 @app.route('/api/verify-token', methods=['POST'])
 def verify_token():
     """
-    Verifica a validade de um token de redefinição de senha
+    Verifica a integridade e validade de um token de redefinição de senha.
     ---
     tags:
       - Recuperação
@@ -361,11 +435,7 @@ def verify_token():
               type: string
     responses:
       200:
-        description: Token válido
-      400:
-        description: Token não fornecido
-      404:
-        description: Token inválido, expirado ou já utilizado
+        description: Status de validação do token retornado
     """
     data = request.get_json() or request.form
     token = data.get('token')
@@ -398,7 +468,7 @@ def verify_token():
 @app.route('/api/reset-password', methods=['POST'])
 def reset_password():
     """
-    Redefine a senha de um usuário utilizando um token válido
+    Redefine a senha de um usuário utilizando um token de acesso válido.
     ---
     tags:
       - Recuperação
@@ -417,8 +487,6 @@ def reset_password():
       200:
         description: Senha redefinida com sucesso
       400:
-        description: Dados incompletos
-      404:
         description: Token inválido ou expirado
     """
     data = request.get_json() or request.form
@@ -443,14 +511,12 @@ def reset_password():
         if record['expira_em'] < datetime.now():
             return jsonify({'success': False, 'error': 'Este link de redefinição expirou.'}), 400
 
-        # Atualiza a senha do usuário
         nova_hash = generate_password_hash(nova_senha)
         cursor.execute("UPDATE usuarios SET senha_hash = %s WHERE id = %s", (nova_hash, record['usuario_id']))
-        
-        # Marca o token como usado
         cursor.execute("UPDATE reset_tokens SET usado = 1 WHERE id = %s", (record['id'],))
         conn.commit()
 
+        send_audit_log(record['usuario_id'], 'senha_redefinida')
         return jsonify({'success': True, 'message': 'Senha redefinida com sucesso!'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -461,7 +527,7 @@ def reset_password():
 @app.route('/api/check-role/<int:user_id>', methods=['GET'])
 def check_role(user_id):
     """
-    Consulta o papel (role) de um usuário específico
+    Consulta o papel (role: 'admin', 'feeder', 'listener') de um usuário.
     ---
     tags:
       - Autorização
@@ -470,10 +536,9 @@ def check_role(user_id):
         name: user_id
         type: integer
         required: true
-        description: ID do usuário
     responses:
       200:
-        description: Role retornado com sucesso
+        description: Role e status premium retornados
       404:
         description: Usuário não encontrado
     """
@@ -483,11 +548,14 @@ def check_role(user_id):
         cursor.execute("SELECT role, is_premium FROM usuarios WHERE id = %s", (user_id,))
         user = cursor.fetchone()
         if user:
+            role = user.get('role', 'listener')
+            if role == 'usuario':
+                role = 'listener'
             return jsonify({
-                'role': user['role'],
+                'role': role,
                 'is_premium': bool(user.get('is_premium', 0))
-            })
-        return jsonify({'role': 'usuario', 'is_premium': False}), 404
+            }), 200
+        return jsonify({'role': 'listener', 'is_premium': False}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -497,7 +565,7 @@ def check_role(user_id):
 @app.route('/api/check-premium/<int:user_id>', methods=['GET'])
 def check_premium(user_id):
     """
-    Consulta se um usuário possui o Plano Premium ativo
+    Consulta o status do Plano Sentinela Pro ativo no Stripe.
     ---
     tags:
       - Pagamento
@@ -506,10 +574,9 @@ def check_premium(user_id):
         name: user_id
         type: integer
         required: true
-        description: ID do usuário
     responses:
       200:
-        description: Status de assinatura retornado com sucesso
+        description: Status retornado com sucesso
       404:
         description: Usuário não encontrado
     """
@@ -523,7 +590,7 @@ def check_premium(user_id):
                 'is_premium': bool(user.get('is_premium', 0)),
                 'stripe_customer_id': user.get('stripe_customer_id'),
                 'stripe_subscription_id': user.get('stripe_subscription_id')
-            })
+            }), 200
         return jsonify({'is_premium': False}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500

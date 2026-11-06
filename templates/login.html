@@ -3,26 +3,61 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Entrar | Tom Hanks</title>
+  <title>Entrar — OpenWave</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="auth-page">
-  <main class="auth-card">
-  <span class="eyebrow">Tom Hanks / Filmografia</span>
-  <h1>Que bom ver você.</h1>
-  <p class="lead">Entre para explorar a carreira e montar sua lista de favoritos.</p>
+<body class="theme-dark d-flex align-items-center justify-content-center min-vh-100 py-5">
+  <main class="card bg-surface border-dark p-4 p-md-5 shadow-lg" style="max-width: 440px; width: 100%;">
+    <div class="text-center mb-4">
+      <div class="brand-radar mx-auto mb-2"><i class="bi bi-broadcast text-cyan fs-2"></i></div>
+      <h3 class="fw-bold text-light mb-1">Open<span class="text-cyan">Wave</span></h3>
+      <p class="text-secondary small mb-0">Rede Colaborativa de Rádio Regional</p>
+    </div>
+
     {% with messages = get_flashed_messages() %}
-    {% if messages %} <p class="flash">{{ messages[0] }}</p> {% endif %}
+      {% if messages %}
+        <div class="alert alert-cyan alert-dismissible fade show small" role="alert">
+          {{ messages[0] }}
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+        </div>
+      {% endif %}
     {% endwith %}
-  <form class="auth-form" method="POST">
-    <div class="field"><label for="email">E-mail</label><input id="email" type="email" name="email" required></div>
-    <div class="field"><label for="senha">Senha</label><input id="senha" type="password" name="senha" required></div>
-        <button type="submit">Entrar</button>
+
+    <form method="POST">
+      <div class="mb-3">
+        <label for="email" class="form-label text-light small fw-bold">E-mail</label>
+        <div class="input-group">
+          <span class="input-group-text bg-dark border-dark text-secondary"><i class="bi bi-envelope"></i></span>
+          <input id="email" type="email" name="email" class="form-control bg-dark border-dark text-light" placeholder="seu@email.com" required autofocus>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <label for="senha" class="form-label text-light small fw-bold mb-0">Senha</label>
+          <a href="{{ url_for('forgot_password') }}" class="text-cyan small text-decoration-none">Esqueceu a senha?</a>
+        </div>
+        <div class="input-group">
+          <span class="input-group-text bg-dark border-dark text-secondary"><i class="bi bi-lock"></i></span>
+          <input id="senha" type="password" name="senha" class="form-control bg-dark border-dark text-light" placeholder="Sua senha secreta" required>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-cyan w-100 py-2 fw-bold mb-3">
+        <i class="bi bi-box-arrow-in-right me-1"></i> Acessar Sistema
+      </button>
     </form>
-  <div class="auth-link">
-    Ainda não tem uma conta? <a href="{{ url_for('register') }}">Criar conta</a> | 
-    <a href="{{ url_for('forgot_password') }}">Esqueci minha senha</a>
-  </div>
+
+    <div class="text-center text-secondary small pt-3 border-top border-dark">
+      Ainda não tem conta? <a href="{{ url_for('register') }}" class="text-cyan text-decoration-none fw-bold">Criar conta</a>
+      <div class="mt-2">
+        <a href="{{ url_for('index') }}" class="text-secondary text-decoration-none small">&larr; Voltar para a Landing Page</a>
+      </div>
+    </div>
   </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

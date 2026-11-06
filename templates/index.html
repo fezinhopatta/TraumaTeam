@@ -3,109 +3,220 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tom Hanks | Filmografia</title>
+    <title>OpenWave — Dashboard de Monitoramento de Rádio</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
-    <header class="site-header">
-        <a class="brand" href="{{ url_for('index') }}">Tom Hanks / Filmografia</a>
-        <div class="user-bar" style="display: flex; align-items: center;">
-            {% if session.get('avatar_url') %}
-                <img src="{{ session.get('avatar_url') }}" alt="Avatar" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover; margin-right: 8px;">
-            {% else %}
-                <img src="https://ui-avatars.com/api/?name={{ session.get('nome') }}&size=30" alt="Avatar Padrão" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover; margin-right: 8px;">
-            {% endif %}
-            <span style="margin-right: 10px;">Olá, {{ session['nome'] }}</span>
-            {% if session.get('role') %}<span class="badge" style="background:#e9ecef; color:#333; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:8px;">({{ session['role'] }})</span>{% endif %}
-            {% if session.get('is_premium') %}
-                <span class="badge" style="background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; font-weight: bold; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; margin-right: 12px; box-shadow: 0 0 8px rgba(255, 215, 0, 0.6);">⭐ VIP PREMIUM</span>
-            {% else %}
-                <a href="{{ url_for('checkout') }}" style="background: linear-gradient(135deg, #28a745, #218838); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; text-decoration: none; font-weight: bold; margin-right: 12px;">⚡ Virar Premium</a>
-            {% endif %}
-            {% if session.get('role') == 'admin' %}
-                <a href="{{ url_for('admin_logs') }}" style="color: yellow; margin-right: 15px;">Ver Logs (Admin)</a>
-            {% endif %}
-            <a href="{{ url_for('perfil', user_id=session.get('user_id')) }}" style="margin-right: 15px;">Meu Perfil</a>
-            <a href="{{ url_for('logout') }}">Sair</a>
+<body class="theme-dark">
+
+    <!-- Header Principal da Aplicação -->
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark sticky-top">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span></span>
+            </a>
+
+            <div class="d-flex align-items-center gap-3 ms-auto">
+                <!-- Se for Feeder ou Admin, exibe botão de cadastrar canal -->
+                {% if user_role in ['feeder', 'admin'] %}
+                    <a href="{{ url_for('canal_novo') }}" class="btn btn-cyan btn-sm d-flex align-items-center gap-1">
+                        <i class="bi bi-plus-circle"></i> <span>Novo Canal</span>
+                    </a>
+                {% endif %}
+
+                {% if is_premium %}
+                    <span class="badge bg-gold text-dark fw-bold px-2 py-1 d-flex align-items-center gap-1">
+                        <i class="bi bi-star-fill"></i> SENTINELA PRO
+                    </span>
+                {% else %}
+                    <a href="{{ url_for('checkout') }}" class="btn btn-outline-warning btn-sm d-flex align-items-center gap-1">
+                        <i class="bi bi-lightning-charge-fill"></i> <span>Virar Pro</span>
+                    </a>
+                {% endif %}
+
+                {% if user_role == 'admin' %}
+                    <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-info btn-sm">
+                        <i class="bi bi-journal-text me-1"></i> Logs
+                    </a>
+                {% endif %}
+
+                <!-- Perfil Dropdown / Link -->
+                <div class="d-flex align-items-center gap-2">
+                    <a href="{{ url_for('perfil', user_id=session.get('user_id')) }}" class="text-decoration-none text-light d-flex align-items-center gap-2">
+                        {% if session.get('avatar_url') %}
+                            <img src="{{ session.get('avatar_url') }}" alt="Avatar" class="avatar-small">
+                        {% else %}
+                            <img src="https://ui-avatars.com/api/?name={{ session.get('nome') }}&background=0284c7&color=fff&size=32" alt="Avatar" class="avatar-small">
+                        {% endif %}
+                        <span class="d-none d-md-inline small fw-semibold">{{ session.get('nome') }}</span>
+                    </a>
+                    <span class="badge bg-dark border border-secondary text-secondary small">{{ user_role }}</span>
+                </div>
+
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm" title="Sair do sistema">
+                    <i class="bi bi-box-arrow-right"></i>
+                </a>
+            </div>
         </div>
     </header>
-    <main class="page-shell">
-        <section class="page-heading">
-            <span class="eyebrow">Uma carreira em cenas</span>
-            <h1>Os filmes de Tom Hanks</h1>
-            <p class="lead">Explore os papéis mais marcantes, guarde seus favoritos e compartilhe suas impressões.</p>
 
-            {% if not session.get('is_premium') %}
-            <div style="background: #fff3cd; color: #856404; border: 1px solid #ffeeba; border-radius: 8px; padding: 12px 18px; margin: 15px 0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                <div>
-                    <strong>⭐ Plano Gratuito:</strong> Você possui <strong>{{ favoritos|length }}</strong> de <strong>5</strong> favoritos disponíveis.
-                    <div style="font-size: 0.9em; color: #6c757d; margin-top: 2px;">Assine o <strong>Plano Premium</strong> por R$ 9,90/mês para desbloquear <strong>favoritos ilimitados</strong> e selo VIP!</div>
-                </div>
-                <a href="{{ url_for('checkout') }}" style="background: #ffc107; color: #212529; font-weight: bold; padding: 6px 14px; border-radius: 6px; text-decoration: none; white-space: nowrap;">⚡ Assinar com Stripe (R$ 9,90)</a>
-            </div>
-            {% else %}
-            <div style="background: #d4edda; color: #155724; border: 1px solid #c3e6cb; border-radius: 8px; padding: 10px 18px; margin: 15px 0; display: flex; align-items: center; justify-content: space-between;">
-                <div>
-                    <strong>⭐ Assinante Premium Ativo:</strong> Você possui <strong>favoritos ilimitados</strong> (atualmente {{ favoritos|length }} filmes favoritados) e selo VIP exclusivo!
-                </div>
-                <span style="background: #28a745; color: white; padding: 3px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold;">PLANO ATIVO</span>
-            </div>
-            {% endif %}
-        </section>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %} <p class="flash">{{ messages[0] }}</p> {% endif %}
-    {% endwith %}
+    <main class="container py-4">
 
-    <div class="movie-grid">
-        {% for movie in movies if movie.poster_path %}
-        <article class="movie-card">
-            <img class="poster" src="https://image.tmdb.org/t/p/w342{{ movie.poster_path }}" alt="Pôster de {{ movie.title }}">
-            <div class="movie-body">
-                <h3>{{ movie.title }}</h3>
-                <p class="overview">{{ movie.overview or 'Sinopse não disponível.' }}</p>
-                <div class="movie-actions">
-            
-            {% if movie.id in favoritos %}
-                <span class="favorite" style="margin-right: 8px;">★ Favoritado</span>
-                <form action="{{ url_for('desfavoritar') }}" method="POST" style="display:inline;">
-                    <input type="hidden" name="movie_id" value="{{ movie.id }}">
-                    <button type="submit" style="background: transparent; color: #dc3545; border: 1px solid #dc3545; padding: 3px 8px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">Remover</button>
-                </form>
-            {% else %}
-                <form action="{{ url_for('favoritar') }}" method="POST">
-                    <input type="hidden" name="movie_id" value="{{ movie.id }}">
-                    <input type="hidden" name="titulo" value="{{ movie.title }}">
-                    <input type="hidden" name="poster_path" value="{{ movie.poster_path }}">
-                    <button type="submit">★ Favoritar</button>
-                </form>
-            {% endif %}
-
-                </div>
-            <div class="comment-section">
-            <h4>Comentários</h4>
-            <ul class="comments">
-                {% for com in comentarios.get(movie.id, []) %}
-                    <li style="margin-bottom: 6px;">
-                        <strong>{{ com.nome }}:</strong> {{ com.texto }}
-                        {% if session.get('role') == 'admin' or session.get('user_id') == com.usuario_id %}
-                        <form action="{{ url_for('apagar_comentario', comment_id=com.id) }}" method="POST" style="display:inline;">
-                            <button type="submit" style="background:#dc3545; color:white; border:none; padding:2px 6px; font-size:11px; border-radius:3px; cursor:pointer; margin-left:8px;">Apagar</button>
-                        </form>
-                        {% endif %}
-                    </li>
+        <!-- Mensagens Flash -->
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert alert-cyan alert-dismissible fade show" role="alert">
+                        <i class="bi bi-info-circle-fill me-2"></i> {{ msg }}
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                    </div>
                 {% endfor %}
-            </ul>
-            
-            <form class="comment-form" action="{{ url_for('comentar') }}" method="POST">
-                <input type="hidden" name="movie_id" value="{{ movie.id }}">
-                <input type="text" name="texto" placeholder="Comente..." required>
-                <button type="submit">Enviar</button>
+            {% endif %}
+        {% endwith %}
+
+        <!-- Barra de Status do Plano -->
+        <section class="card bg-surface border-dark p-3 mb-4">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                    {% if is_premium %}
+                        <div class="text-gold fw-bold"><i class="bi bi-check-circle-fill me-1"></i> Plano Sentinela Pro Ativo</div>
+                        <div class="text-secondary small">Escuta em tempo real (baixa latência) e monitoramento ilimitado de frequências.</div>
+                    {% else %}
+                        <div class="text-light fw-bold"><i class="bi bi-shield me-1"></i> Plano Comunitário Gratuito</div>
+                        <div class="text-secondary small">
+                            Você favoritou <strong>{{ favoritos|length }}</strong> de <strong>{{ limite_favoritos }}</strong> frequências permitidas.
+                            Delay padrão de 10 minutos.
+                        </div>
+                    {% endif %}
+                </div>
+                {% if not is_premium %}
+                    <a href="{{ url_for('checkout') }}" class="btn btn-gold btn-sm fw-bold">
+                        <i class="bi bi-lightning-fill me-1"></i> Desbloquear Tempo Real (R$ 9,90/mês)
+                    </a>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Filtros e Busca -->
+        <section class="mb-4">
+            <form method="GET" action="{{ url_for('index') }}" class="row g-2 align-items-center">
+                <div class="col-md-5">
+                    <div class="input-group">
+                        <span class="input-group-text bg-surface border-dark text-secondary"><i class="bi bi-search"></i></span>
+                        <input type="text" name="busca" class="form-control bg-surface border-dark text-light" placeholder="Buscar canal, cidade ou frequência..." value="{{ busca_filtro }}">
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <select name="categoria" class="form-select bg-surface border-dark text-light" onchange="this.form.submit()">
+                        <option value="">Todas as Categorias</option>
+                        <option value="Resgate & Bombeiros" {% if categoria_filtro == 'Resgate & Bombeiros' %}selected{% endif %}>Resgate & Bombeiros</option>
+                        <option value="Polícia / Patrulha" {% if categoria_filtro == 'Polícia / Patrulha' %}selected{% endif %}>Polícia / Patrulha</option>
+                        <option value="Rodovias" {% if categoria_filtro == 'Rodovias' %}selected{% endif %}>Rodovias</option>
+                        <option value="Defesa Civil" {% if categoria_filtro == 'Defesa Civil' %}selected{% endif %}>Defesa Civil</option>
+                    </select>
+                </div>
+                <div class="col-md-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-outline-cyan w-100">Filtrar</button>
+                    {% if busca_filtro or categoria_filtro %}
+                        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
+                    {% endif %}
+                </div>
             </form>
-            </div>
-            </div>
-        </article>
-        {% endfor %}
-    </div>
+        </section>
+
+        <!-- Grade de Canais de Rádio -->
+        <div class="row g-4">
+            {% for c in canais %}
+                <div class="col-md-6 col-lg-4">
+                    <div class="card bg-surface border-dark h-100 channel-card position-relative">
+                        <div class="card-body d-flex flex-column">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <span class="badge bg-freq text-cyan font-monospace px-2 py-1">
+                                    <i class="bi bi-reception-4 me-1"></i>{{ c.frequencia }}
+                                </span>
+                                {% if c.status == 'online' %}
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle d-flex align-items-center gap-1">
+                                        <span class="status-dot-pulse"></span> ONLINE
+                                    </span>
+                                {% else %}
+                                    <span class="badge bg-secondary">OFFLINE</span>
+                                {% endif %}
+                            </div>
+
+                            <h5 class="card-title text-light mb-1">{{ c.nome }}</h5>
+                            <div class="text-secondary small mb-2">
+                                <i class="bi bi-geo-alt me-1"></i>{{ c.cidade }} / {{ c.estado }} &bull;
+                                <span class="badge bg-dark border border-secondary text-secondary">{{ c.categoria }}</span>
+                            </div>
+
+                            <p class="card-text text-secondary small flex-grow-1">
+                                {{ c.descricao or 'Canal de comunicação operacional de emergência regional.' }}
+                            </p>
+
+                            <!-- Player Rápido -->
+                            <div class="mb-3 bg-dark p-2 rounded border border-dark">
+                                <div class="d-flex justify-content-between align-items-center mb-1 text-secondary" style="font-size: 0.75em;">
+                                    <span>STREAM AO VIVO</span>
+                                    <span>{% if is_premium %}<span class="text-gold">0s Delay (Pro)</span>{% else %}<span class="text-secondary">10m Delay (Free)</span>{% endif %}</span>
+                                </div>
+                                <audio controls preload="none" style="width: 100%; height: 32px;">
+                                    <source src="{{ c.stream_url or url_for('serve_audio', filename='gravacoes/demo.mp3') }}" type="audio/mpeg">
+                                    Seu navegador não suporta streaming de áudio.
+                                </audio>
+                            </div>
+
+                            <!-- Ações -->
+                            <div class="d-flex justify-content-between align-items-center pt-2 border-top border-dark">
+                                <div>
+                                    {% if c.id in favoritos %}
+                                        <form action="{{ url_for('desfavoritar_canal', canal_id=c.id) }}" method="POST" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-gold" title="Remover dos favoritos">
+                                                <i class="bi bi-star-fill me-1"></i> Favoritado
+                                            </button>
+                                        </form>
+                                    {% else %}
+                                        <form action="{{ url_for('favoritar_canal', canal_id=c.id) }}" method="POST" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-outline-secondary text-light" title="Adicionar aos favoritos">
+                                                <i class="bi bi-star me-1"></i> Favoritar
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                </div>
+
+                                <div class="d-flex gap-1">
+                                    <a href="{{ url_for('canal_detalhe', canal_id=c.id) }}" class="btn btn-sm btn-outline-cyan" title="Ver detalhes e ocorrências gravadas">
+                                        <i class="bi bi-info-circle me-1"></i> Detalhes
+                                    </a>
+                                    {% if user_role == 'admin' or session.get('user_id') == c.usuario_id %}
+                                        <a href="{{ url_for('canal_editar', canal_id=c.id) }}" class="btn btn-sm btn-outline-warning" title="Editar canal">
+                                            <i class="bi bi-pencil"></i>
+                                        </a>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% else %}
+                <div class="col-12 text-center py-5">
+                    <i class="bi bi-broadcast-pin text-secondary fs-1 mb-3 d-block"></i>
+                    <h5 class="text-light">Nenhum canal de rádio encontrado</h5>
+                    <p class="text-secondary small">Nenhuma estação atende aos filtros atuais. Tente buscar por outra cidade ou categoria.</p>
+                </div>
+            {% endfor %}
+        </div>
+
     </main>
+
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-5">
+        <div class="container">
+            <p class="mb-1">📡 <strong>OpenWave</strong> — Plataforma colaborativa de monitoramento de rádio regional.</p>
+            <p class="mb-0">Orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a> — ISW055.</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

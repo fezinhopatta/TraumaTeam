@@ -5,3 +5,4 @@ python-dotenv==1.0.0
 Werkzeug==3.0.1
 minio
 stripe>=7.0.0
+flasgger>=0.9.5

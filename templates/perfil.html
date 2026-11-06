@@ -2,171 +2,208 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Perfil de {{ usuario.nome }} - Catálogo Tom Hanks</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perfil de {{ usuario.nome }} — OpenWave</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .profile-img { width: 150px; height: 150px; object-fit: cover; border-radius: 50%; }
-        .movie-poster { width: 100px; height: 150px; object-fit: cover; border-radius: 8px; }
-    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="bg-light">
+<body class="theme-dark">
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-    <div class="container">
-        <a class="navbar-brand" href="{{ url_for('index') }}">Catálogo Tom Hanks</a>
-        <div class="collapse navbar-collapse justify-content-end">
-            <ul class="navbar-nav align-items-center">
-                <li class="nav-item d-flex align-items-center me-3">
-                    {% if session.get('avatar_url') %}
-                        <img src="{{ session.get('avatar_url') }}" alt="Avatar" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover; margin-right: 8px;">
-                    {% else %}
-                        <img src="https://ui-avatars.com/api/?name={{ session.get('nome') }}&size=30" alt="Avatar Padrão" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover; margin-right: 8px;">
-                    {% endif %}
-                    <a class="nav-link" href="{{ url_for('perfil', user_id=session.get('user_id')) }}" style="padding-left: 0;">{{ session.get('nome') }} (Meu Perfil)</a>
-                    {% if session.get('is_premium') %}
-                        <span class="badge ms-2" style="background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; font-weight: bold; padding: 4px 10px; border-radius: 12px; font-size: 0.75em; box-shadow: 0 0 8px rgba(255, 215, 0, 0.6);">⭐ PREMIUM</span>
-                    {% else %}
-                        <a href="{{ url_for('checkout') }}" class="badge ms-2 text-decoration-none" style="background: #28a745; color: white; padding: 4px 8px; border-radius: 12px; font-size: 0.75em;">⚡ Virar Premium</a>
-                    {% endif %}
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="{{ url_for('logout') }}">Sair</a>
-                </li>
-            </ul>
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span></span>
+            </a>
+            <div class="d-flex align-items-center gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Dashboard</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">Sair</a>
+            </div>
         </div>
-    </div>
-</nav>
+    </header>
 
-<div class="container mt-5">
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        {% for message in messages %}
-          <div class="alert alert-info">{{ message }}</div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+    <main class="container py-4">
 
-    <div class="row">
-        <!-- Coluna da Esquerda: Perfil -->
-        <div class="col-md-4">
-            <div class="card text-center p-4 shadow-sm">
-                {% if usuario.avatar_url %}
-                    <img src="{{ usuario.avatar_url }}" alt="Foto de {{ usuario.nome }}" class="profile-img mx-auto mb-3">
-                {% else %}
-                    <img src="https://ui-avatars.com/api/?name={{ usuario.nome }}&size=150" alt="Avatar Padrão" class="profile-img mx-auto mb-3">
-                {% endif %}
-                
-                <h3>{{ usuario.nome }}</h3>
-                <p class="text-muted mb-1">{{ usuario.email }}</p>
-
-                {% if usuario.is_premium %}
-                <div class="mt-2 mb-2">
-                    <span class="badge" style="background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; font-size: 0.9em; padding: 6px 14px; border-radius: 20px; font-weight: bold; box-shadow: 0 2px 6px rgba(255, 215, 0, 0.4);">
-                        ⭐ ASSINANTE PREMIUM
-                    </span>
-                </div>
-                <p class="text-success small fw-bold mb-2">Benefício Ativo: Favoritos Ilimitados</p>
-                {% endif %}
-
-                <p class="mt-2">{{ usuario.bio if usuario.bio else 'Nenhuma bio definida ainda.' }}</p>
-
-                {% if is_owner %}
-                <button class="btn btn-outline-primary btn-sm mt-2" data-bs-toggle="modal" data-bs-target="#editProfileModal">
-                    Editar Perfil
-                </button>
-
-                {% if not usuario.is_premium %}
-                <div class="card bg-light border-warning mt-4 p-3 text-start shadow-sm">
-                    <div class="d-flex align-items-center mb-1">
-                        <span class="fs-5 me-2">⭐</span>
-                        <h6 class="text-warning-emphasis fw-bold mb-0">Plano Premium</h6>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert alert-cyan alert-dismissible fade show" role="alert">
+                        <i class="bi bi-info-circle-fill me-2"></i> {{ msg }}
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
                     </div>
-                    <p class="small text-muted mb-2">Desbloqueie <strong>favoritos ilimitados</strong> e receba o selo VIP por apenas <strong>R$ 9,90/mês</strong>.</p>
-                    <a href="{{ url_for('checkout') }}" class="btn btn-warning btn-sm w-100 fw-bold">
-                        ⚡ Assinar com Stripe
-                    </a>
-                </div>
-                {% endif %}
-                {% endif %}
-            </div>
-        </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
 
-        <!-- Coluna da Direita: Favoritos -->
-        <div class="col-md-8">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h4 class="mb-0">Filmes Favoritos</h4>
-                {% if usuario.is_premium %}
-                    <span class="badge bg-warning text-dark fs-6">Ilimitado ⭐ ({{ favoritos|length }})</span>
-                {% else %}
-                    <span class="badge bg-secondary fs-6">{{ favoritos|length }} / 5 (Plano Free)</span>
-                {% endif %}
-            </div>
-            <div class="row">
-                {% for fav in favoritos %}
-                <div class="col-md-4 col-sm-6 mb-3">
-                    <div class="card h-100 shadow-sm border-0">
-                        {% if fav.poster_path %}
-                            <img src="https://image.tmdb.org/t/p/w200{{ fav.poster_path }}" class="card-img-top" alt="{{ fav.titulo }}">
-                        {% else %}
-                            <img src="https://via.placeholder.com/200x300?text=Sem+Poster" class="card-img-top" alt="{{ fav.titulo }}">
+        <div class="row g-4">
+            <!-- Coluna do Perfil -->
+            <div class="col-md-4">
+                <div class="card bg-surface border-dark p-4 text-center">
+                    {% if usuario.avatar_url %}
+                        <img src="{{ usuario.avatar_url }}" alt="Avatar" class="avatar-large mx-auto mb-3">
+                    {% else %}
+                        <img src="https://ui-avatars.com/api/?name={{ usuario.nome }}&background=0284c7&color=fff&size=120" alt="Avatar" class="avatar-large mx-auto mb-3">
+                    {% endif %}
+
+                    <h4 class="text-light fw-bold mb-1">{{ usuario.nome }}</h4>
+                    <p class="text-secondary small mb-2">{{ usuario.email }}</p>
+
+                    <div class="mb-3">
+                        <span class="badge bg-dark border border-secondary text-cyan px-3 py-1 font-monospace">
+                            PAPEL: {{ usuario.role|upper }}
+                        </span>
+                    </div>
+
+                    {% if usuario.is_premium %}
+                        <div class="badge bg-gold text-dark fw-bold px-3 py-2 rounded-pill mb-2 d-inline-flex align-items-center gap-1">
+                            <i class="bi bi-star-fill"></i> ASSINANTE SENTINELA PRO
+                        </div>
+                        <p class="text-gold small mb-3">Streaming em tempo real sem delay e favoritos ilimitados</p>
+                    {% else %}
+                        <div class="badge bg-secondary px-3 py-2 rounded-pill mb-3">
+                            PLANO COMUNITÁRIO (FREE)
+                        </div>
+                    {% endif %}
+
+                    <p class="text-secondary small mb-3">{{ usuario.bio or 'Nenhuma biografia informada.' }}</p>
+
+                    {% if is_owner %}
+                        <button class="btn btn-outline-cyan btn-sm w-100 mb-3" data-bs-toggle="modal" data-bs-target="#editProfileModal">
+                            <i class="bi bi-pencil-square me-1"></i> Editar Perfil e Foto
+                        </button>
+
+                        {% if not usuario.is_premium %}
+                            <div class="p-3 bg-dark rounded border border-warning text-start">
+                                <div class="text-gold fw-bold small mb-1"><i class="bi bi-lightning-charge-fill me-1"></i> Upgrade Sentinela Pro</div>
+                                <div class="text-secondary" style="font-size: 0.8em; line-height: 1.4;">
+                                    Ouça despachos de resgate e rodovias sem delay de 10 min por apenas <strong>R$ 9,90/mês</strong> via Stripe.
+                                </div>
+                                <a href="{{ url_for('checkout') }}" class="btn btn-gold btn-sm w-100 mt-2 fw-bold">
+                                    Assinar Sentinela Pro
+                                </a>
+                            </div>
                         {% endif %}
-                        <div class="card-body p-2 text-center">
-                            <h6 class="card-title mb-1">{{ fav.titulo }}</h6>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Coluna de Canais e Favoritos -->
+            <div class="col-md-8">
+                <!-- Se for Feeder ou Admin, exibe canais que gerencia -->
+                {% if usuario.role in ['feeder', 'admin'] %}
+                    <div class="card bg-surface border-dark p-4 mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="text-light fw-bold mb-0">
+                                <i class="bi bi-broadcast text-cyan me-1"></i> Canais Operados por Esta Estação
+                            </h5>
                             {% if is_owner %}
-                            <form action="{{ url_for('desfavoritar') }}" method="POST" class="mt-2">
-                                <input type="hidden" name="movie_id" value="{{ fav.tmdb_movie_id }}">
-                                <button type="submit" class="btn btn-outline-danger btn-sm py-0" style="font-size: 0.75rem;">Remover</button>
-                            </form>
+                                <a href="{{ url_for('canal_novo') }}" class="btn btn-cyan btn-sm">
+                                    <i class="bi bi-plus-lg me-1"></i> Novo Canal
+                                </a>
                             {% endif %}
                         </div>
+
+                        {% if meus_canais %}
+                            <div class="list-group list-group-flush bg-transparent">
+                                {% for mc in meus_canais %}
+                                    <div class="list-group-item bg-dark border-dark rounded mb-2 p-3 d-flex justify-content-between align-items-center flex-wrap gap-2 text-light">
+                                        <div>
+                                            <span class="badge bg-freq text-cyan font-monospace me-2">{{ mc.frequencia }}</span>
+                                            <strong>{{ mc.nome }}</strong>
+                                            <div class="text-secondary small">{{ mc.cidade }}/{{ mc.estado }} &bull; {{ mc.categoria }}</div>
+                                        </div>
+                                        <div class="d-flex gap-2">
+                                            <a href="{{ url_for('canal_detalhe', canal_id=mc.id) }}" class="btn btn-outline-cyan btn-sm">Abrir</a>
+                                            {% if is_owner %}
+                                                <a href="{{ url_for('canal_editar', canal_id=mc.id) }}" class="btn btn-outline-warning btn-sm">Editar</a>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <p class="text-secondary small mb-0">Nenhum canal cadastrado ainda por este operador.</p>
+                        {% endif %}
                     </div>
+                {% endif %}
+
+                <!-- Canais Favoritados -->
+                <div class="card bg-surface border-dark p-4">
+                    <h5 class="text-light fw-bold mb-3">
+                        <i class="bi bi-star-fill text-gold me-1"></i> Frequências Favoritas Salvas
+                    </h5>
+
+                    {% if canais_favoritados %}
+                        <div class="list-group list-group-flush bg-transparent">
+                            {% for cf in canais_favoritados %}
+                                <div class="list-group-item bg-dark border-dark rounded mb-2 p-3 d-flex justify-content-between align-items-center flex-wrap gap-2 text-light">
+                                    <div>
+                                        <span class="badge bg-freq text-cyan font-monospace me-2">{{ cf.frequencia }}</span>
+                                        <strong>{{ cf.nome }}</strong>
+                                        <div class="text-secondary small">{{ cf.cidade }}/{{ cf.estado }} &bull; Estação: {{ cf.feeder_nome }}</div>
+                                    </div>
+                                    <div class="d-flex gap-2">
+                                        <a href="{{ url_for('canal_detalhe', canal_id=cf.id) }}" class="btn btn-outline-cyan btn-sm">Ouvir</a>
+                                        {% if is_owner %}
+                                            <form action="{{ url_for('desfavoritar_canal', canal_id=cf.id) }}" method="POST">
+                                                <button type="submit" class="btn btn-outline-danger btn-sm" title="Desfavoritar"><i class="bi bi-x-lg"></i></button>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="text-secondary small mb-0">Você ainda não favoritou nenhuma frequência de rádio.</p>
+                    {% endif %}
                 </div>
-                {% else %}
-                <p class="text-muted">Nenhum filme favoritado ainda.</p>
-                {% endfor %}
             </div>
         </div>
-    </div>
-</div>
 
-{% if is_owner %}
-<!-- Modal Edição de Perfil -->
-<div class="modal fade" id="editProfileModal" tabindex="-1" aria-labelledby="editProfileModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <form action="{{ url_for('perfil', user_id=usuario.id) }}" method="POST" enctype="multipart/form-data">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="editProfileModalLabel">Editar Perfil</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            
-            <div class="mb-3">
-                <label for="nome" class="form-label">Nome</label>
-                <input type="text" class="form-control" id="nome" name="nome" value="{{ usuario.nome }}" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="bio" class="form-label">Sobre mim (Bio)</label>
-                <textarea class="form-control" id="bio" name="bio" rows="3">{{ usuario.bio if usuario.bio else '' }}</textarea>
-            </div>
-            
-            <div class="mb-3">
-                <label for="foto" class="form-label">Foto de Perfil (máx 2MB)</label>
-                <input class="form-control" type="file" id="foto" name="foto" accept="image/*">
-            </div>
+    </main>
 
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-            <button type="submit" class="btn btn-primary">Salvar Alterações</button>
-          </div>
+    <!-- Modal Editar Perfil -->
+    {% if is_owner %}
+        <div class="modal fade" id="editProfileModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content bg-surface border-dark text-light">
+                    <div class="modal-header border-dark">
+                        <h5 class="modal-title fw-bold text-cyan">Editar Perfil</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <form method="POST" enctype="multipart/form-data">
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label small fw-bold">Nome de Exibição</label>
+                                <input type="text" name="nome" class="form-control bg-dark border-dark text-light" value="{{ usuario.nome }}" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small fw-bold">Biografia / Descrição da Estação</label>
+                                <textarea name="bio" rows="3" class="form-control bg-dark border-dark text-light">{{ usuario.bio or '' }}</textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small fw-bold">Foto de Perfil / Emblema (MinIO)</label>
+                                <input type="file" name="foto" accept="image/*" class="form-control bg-dark border-dark text-light">
+                                <div class="text-secondary small mt-1">Formatos aceitos: JPG, PNG, WEBP. Armazenado no MinIO S3.</div>
+                            </div>
+                        </div>
+                        <div class="modal-footer border-dark">
+                            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="submit" class="btn btn-cyan fw-bold">Salvar Alterações</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
         </div>
-    </form>
-  </div>
-</div>
-{% endif %}
+    {% endif %}
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-5">
+        <div class="container">
+            <p class="mb-0">📡 OpenWave — Projeto orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a></p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
