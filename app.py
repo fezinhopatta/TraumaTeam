@@ -174,6 +174,21 @@ def init_domain_db():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """)
 
+        # 5. Expansão para Modelo SaaS: Planos Recorrentes e Idempotência Stripe
+        try:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS plano VARCHAR(20) NOT NULL DEFAULT 'free'")
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS status_assinatura VARCHAR(30) NULL DEFAULT 'active'")
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS assinatura_valor_centavos INT NULL DEFAULT 0")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stripe_eventos (
+                    event_id VARCHAR(100) NOT NULL PRIMARY KEY,
+                    tipo VARCHAR(80) NOT NULL,
+                    recebido_em TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+        except Exception as mig_err:
+            print(f"[OpenWave] Detalhe de migração SaaS: {mig_err}")
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -198,21 +213,192 @@ def get_user_role(user_id):
         pass
     return session.get('role', 'listener')
 
-def get_user_premium_status(user_id):
-    """Consulta se o usuário possui o Plano Sentinela Pro ativo no Stripe."""
+# ==============================================================
+# MODELO SAAS: PLANOS, DIREITOS E REGRAS DE NEGÓCIO POR REQUISIÇÃO
+# ==============================================================
+
+PLANOS_DISPONIVEIS = {
+    'free': {
+        'id': 'free',
+        'nome': 'Plano Comunitário',
+        'rotulo': 'Comunitário Free',
+        'valor_mensal_centavos': 0,
+        'preco_formatado': 'R$ 0,00',
+        'max_favoritos': 3,
+        'delay_segundos': 600,  # 10 minutos de delay proposital
+        'acesso_gravacoes': False,
+        'permite_download': False,
+        'descricao': 'Acesso a canais abertos com delay de 10 minutos e limite de 3 frequências salvas.'
+    },
+    'pro': {
+        'id': 'pro',
+        'nome': 'Sentinela Pro',
+        'rotulo': 'Sentinela Pro',
+        'valor_mensal_centavos': 990,
+        'preco_formatado': 'R$ 9,90/mês',
+        'max_favoritos': None,  # Ilimitado
+        'delay_segundos': 0,    # Tempo real sem delay
+        'acesso_gravacoes': True,
+        'permite_download': False,
+        'descricao': 'Streaming em tempo real com baixa latência, favoritos ilimitados e acervo de 48h.'
+    },
+    'central': {
+        'id': 'central',
+        'nome': 'Central Tática VIP',
+        'rotulo': 'Central Tática VIP',
+        'valor_mensal_centavos': 2990,
+        'preco_formatado': 'R$ 29,90/mês',
+        'max_favoritos': None,  # Ilimitado
+        'delay_segundos': 0,    # Prioridade máxima
+        'acesso_gravacoes': True,
+        'permite_download': True,
+        'descricao': 'Prioridade total na transmissão, download direto de áudios (.mp3) e canais táticos.'
+    }
+}
+
+STATUS_ATIVOS = ('active', 'trialing')
+
+def obter_dados_assinatura(user_id):
+    """
+    Consulta o banco a cada requisição para determinar os direitos vigentes do usuário.
+    Se o status for 'past_due', 'canceled' ou inativo, os direitos caem imediatamente
+    para o plano Free, garantindo que o Pro/Central não continue de graça sem pagamento ativo.
+    """
+    free_plan = PLANOS_DISPONIVEIS['free']
+    padrao = {
+        'plano_contratado': 'free',
+        'plano_efetivo': 'free',
+        'status_assinatura': 'active',
+        'is_premium': False,
+        'em_dia': True,
+        'inadimplente': False,
+        'stripe_customer_id': None,
+        'stripe_subscription_id': None,
+        'assinatura_valor_centavos': 0,
+        'direitos': free_plan,
+        'rotulo': free_plan['rotulo']
+    }
     if not user_id:
-        return False
+        return padrao
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT is_premium FROM usuarios WHERE id = %s", (user_id,))
+        cursor.execute("""
+            SELECT id, is_premium, 
+                   COALESCE(plano, 'free') as plano, 
+                   COALESCE(status_assinatura, 'active') as status_assinatura,
+                   stripe_customer_id, stripe_subscription_id,
+                   COALESCE(assinatura_valor_centavos, 0) as assinatura_valor_centavos
+            FROM usuarios 
+            WHERE id = %s
+        """, (user_id,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
-        return bool(row.get('is_premium', 0)) if row else False
+
+        if not row:
+            return padrao
+
+        if isinstance(row, dict):
+            raw_premium = bool(row.get('is_premium', 0))
+            raw_plano = row.get('plano') or ('pro' if raw_premium else 'free')
+            status = (row.get('status_assinatura') or 'active').lower()
+            customer_id = row.get('stripe_customer_id')
+            subscription_id = row.get('stripe_subscription_id')
+            valor_centavos = row.get('assinatura_valor_centavos') or 0
+        else:
+            raw_premium = bool(row[1]) if len(row) > 1 else False
+            raw_plano = 'pro' if raw_premium else 'free'
+            status = 'active'
+            customer_id = None
+            subscription_id = None
+            valor_centavos = 990 if raw_premium else 0
+
+        if raw_plano not in PLANOS_DISPONIVEIS:
+            raw_plano = 'pro' if raw_premium else 'free'
+
+        em_dia = status in STATUS_ATIVOS
+        inadimplente = (status == 'past_due')
+
+        if em_dia and (raw_plano in ('pro', 'central') or raw_premium):
+            plano_efetivo = raw_plano if raw_plano in ('pro', 'central') else 'pro'
+            is_premium_efetivo = True
+        else:
+            plano_efetivo = 'free'
+            is_premium_efetivo = False
+
+        direitos = PLANOS_DISPONIVEIS[plano_efetivo]
+
+        return {
+            'plano_contratado': raw_plano,
+            'plano_efetivo': plano_efetivo,
+            'status_assinatura': status,
+            'is_premium': is_premium_efetivo,
+            'em_dia': em_dia,
+            'inadimplente': inadimplente,
+            'stripe_customer_id': customer_id,
+            'stripe_subscription_id': subscription_id,
+            'assinatura_valor_centavos': valor_centavos or direitos['valor_mensal_centavos'],
+            'direitos': direitos,
+            'rotulo': PLANOS_DISPONIVEIS[raw_plano]['rotulo']
+        }
     except Exception as e:
-        print(f"[OpenWave] Erro ao checar status premium: {e}")
-        return False
+        print(f"[OpenWave] Erro ao consultar dados de assinatura: {e}")
+        return padrao
+
+def get_user_premium_status(user_id):
+    """
+    Mantém retrocompatibilidade: retorna True se o usuário tiver direitos Pro/Central ativos agora.
+    """
+    dados = obter_dados_assinatura(user_id)
+    return dados['is_premium']
+
+def verificar_permissao_plano(user_id, feature, **kwargs):
+    """
+    Verifica a cada requisição se a ação solicitada é permitida pelo plano efetivo do usuário.
+    Retorna (permitido: bool, detalhe_erro: dict|None).
+    """
+    dados = obter_dados_assinatura(user_id)
+    direitos = dados['direitos']
+
+    if feature == 'favoritar':
+        max_fav = direitos['max_favoritos']
+        if max_fav is None:
+            return True, None
+        total_atual = kwargs.get('total_atual', 0)
+        if total_atual >= max_fav:
+            return False, {
+                'recurso': 'favoritos',
+                'limite': max_fav,
+                'atual': total_atual,
+                'plano_atual': dados['rotulo'],
+                'plano_sugerido': 'Sentinela Pro',
+                'mensagem': f"⚠️ Limite atingido! O plano gratuito permite favoritar até {max_fav} canais. Assine o Plano Sentinela Pro por R$ 9,90/mês para monitoramento ilimitado!"
+            }
+        return True, None
+
+    elif feature == 'acesso_gravacoes':
+        if direitos['acesso_gravacoes']:
+            return True, None
+        return False, {
+            'recurso': 'gravacoes',
+            'plano_atual': dados['rotulo'],
+            'plano_sugerido': 'Sentinela Pro',
+            'mensagem': "O acervo de gravações históricas é exclusivo para assinantes Sentinela Pro ou Central Tática."
+        }
+
+    elif feature == 'download_audio':
+        if direitos['permite_download']:
+            return True, None
+        return False, {
+            'recurso': 'download',
+            'plano_atual': dados['rotulo'],
+            'plano_sugerido': 'Central Tática VIP',
+            'mensagem': "O download de arquivos de áudio é exclusivo do plano Central Tática VIP."
+        }
+
+    return True, None
 
 # ==============================================================
 # ROTAS PÚBLICAS E LANDING PAGE
@@ -801,13 +987,18 @@ def favoritar_canal(canal_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        if not is_premium:
-            cursor.execute("SELECT COUNT(*) FROM canais_favoritos WHERE usuario_id = %s", (user_id,))
-            (total_favoritos,) = cursor.fetchone()
-            if total_favoritos >= LIMITE_GRATUITO:
-                send_audit_log('403_limite_favoritos_atingido', user_id)
-                flash(f"⚠️ Limite atingido! O plano gratuito permite favoritar até {LIMITE_GRATUITO} canais. Assine o Plano Sentinela Pro por R$ 9,90/mês para monitoramento ilimitado!")
-                return redirect(url_for('index'))
+        cursor.execute("SELECT COUNT(*) FROM canais_favoritos WHERE usuario_id = %s", (user_id,))
+        (total_favoritos,) = cursor.fetchone()
+
+        permitido, detalhe_erro = verificar_permissao_plano(user_id, 'favoritar', total_atual=total_favoritos)
+        if not permitido:
+            send_audit_log('403_limite_favoritos_atingido', user_id)
+            cursor.close()
+            conn.close()
+            if request.is_json or request.headers.get('Accept') == 'application/json':
+                return jsonify({'error': 'Limite do plano atingido', 'detalhes': detalhe_erro}), 403
+            flash(detalhe_erro['mensagem'])
+            return render_template('limite.html', limite=LIMITE_GRATUITO, total=total_favoritos, detalhe=detalhe_erro), 403
 
         cursor.execute("INSERT INTO canais_favoritos (usuario_id, canal_id) VALUES (%s, %s)", (user_id, canal_id))
         conn.commit()
@@ -855,7 +1046,14 @@ def perfil(user_id):
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, nome, email, role, bio, avatar_url, is_premium, criado_em FROM usuarios WHERE id = %s", (user_id,))
+    cursor.execute("""
+        SELECT id, nome, email, role, bio, avatar_url, is_premium, 
+               COALESCE(plano, 'free') as plano, 
+               COALESCE(status_assinatura, 'active') as status_assinatura,
+               stripe_customer_id, stripe_subscription_id, 
+               assinatura_valor_centavos, criado_em 
+        FROM usuarios WHERE id = %s
+    """, (user_id,))
     usuario = cursor.fetchone()
 
     if not usuario:
@@ -923,28 +1121,37 @@ def perfil(user_id):
     cursor.close()
     conn.close()
 
+    dados_assinatura = obter_dados_assinatura(user_id)
+
     return render_template(
         'perfil.html',
         usuario=usuario,
+        assinatura=dados_assinatura,
         meus_canais=meus_canais,
         canais_favoritados=canais_favoritados,
         is_owner=is_owner
     )
 
 # ==============================================================
-# STRIPE CHECKOUT E WEBHOOK (PLANO SENTINELA PRO)
+# ==============================================================
+# STRIPE CHECKOUT, PORTAL E WEBHOOK (ASSINATURAS SAAS RECORRENTES)
 # ==============================================================
 
 @app.route('/checkout', methods=['GET', 'POST'])
 @app.route('/stripe/checkout', methods=['GET', 'POST'])
 def checkout():
-    """Inicia sessão de pagamento no Stripe para o Plano Sentinela Pro."""
+    """Inicia sessão de pagamento recorrente mensal no Stripe com escolha de plano."""
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
     user_id = session['user_id']
-    if get_user_premium_status(user_id):
-        flash("⭐ Você já é um assinante Sentinela Pro! Seu acesso sem delay está ativo.")
+    plano_desejado = request.args.get('plano') or request.form.get('plano') or 'pro'
+    if plano_desejado not in PLANOS_DISPONIVEIS or plano_desejado == 'free':
+        plano_desejado = 'pro'
+
+    dados_atuais = obter_dados_assinatura(user_id)
+    if dados_atuais['is_premium'] and dados_atuais['plano_efetivo'] == plano_desejado:
+        flash(f"⭐ Você já é um assinante ativo do plano {PLANOS_DISPONIVEIS[plano_desejado]['rotulo']}!")
         return redirect(url_for('perfil', user_id=user_id))
 
     stripe_key = os.getenv('STRIPE_SECRET_KEY')
@@ -957,35 +1164,61 @@ def checkout():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, email, nome FROM usuarios WHERE id = %s", (user_id,))
+    cursor.execute("SELECT id, email, nome, stripe_customer_id FROM usuarios WHERE id = %s", (user_id,))
     usuario = cursor.fetchone()
     cursor.close()
     conn.close()
 
-    price_id = os.getenv('STRIPE_PRICE_ID')
+    info_plano = PLANOS_DISPONIVEIS[plano_desejado]
+    price_id = os.getenv(f'STRIPE_PRICE_{plano_desejado.upper()}') or (os.getenv('STRIPE_PRICE_ID') if plano_desejado == 'pro' else None)
+
     try:
+        customer_id = usuario.get('stripe_customer_id') if usuario else None
+        if not customer_id and usuario:
+            try:
+                cust = stripe.Customer.create(
+                    email=usuario['email'],
+                    name=usuario['nome'],
+                    metadata={'user_id': str(user_id)}
+                )
+                customer_id = cust.id
+                c_conn = get_db_connection()
+                c_cur = c_conn.cursor()
+                c_cur.execute("UPDATE usuarios SET stripe_customer_id = %s WHERE id = %s", (customer_id, user_id))
+                c_conn.commit()
+                c_cur.close()
+                c_conn.close()
+            except Exception as ce:
+                print(f"[Stripe Customer Create] {ce}")
+
         line_items = [{
             'price_data': {
                 'currency': 'brl',
                 'product_data': {
-                    'name': 'OpenWave — Plano Sentinela Pro',
-                    'description': 'Streaming de rádio em tempo real sem delay, favoritos ilimitados e arquivo de gravações'
+                    'name': f"OpenWave — {info_plano['rotulo']}",
+                    'description': info_plano['descricao']
                 },
-                'unit_amount': 990, # R$ 9,90/mês
+                'unit_amount': info_plano['valor_mensal_centavos'],
                 'recurring': {'interval': 'month'}
             },
             'quantity': 1,
         }] if not price_id else [{'price': price_id.strip(), 'quantity': 1}]
 
-        checkout_session = stripe.checkout.Session.create(
-            line_items=line_items,
-            mode='subscription',
-            customer_email=usuario['email'] if usuario else None,
-            client_reference_id=str(user_id),
-            metadata={'user_id': str(user_id), 'plano': 'sentinela_pro'},
-            success_url=f"{app_url}/checkout/sucesso?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{app_url}/checkout/cancelado",
-        )
+        checkout_kwargs = {
+            'line_items': line_items,
+            'mode': 'subscription',
+            'client_reference_id': str(user_id),
+            'metadata': {'user_id': str(user_id), 'plano': plano_desejado},
+            'subscription_data': {'metadata': {'user_id': str(user_id), 'plano': plano_desejado}},
+            'success_url': f"{app_url}/checkout/sucesso?session_id={{CHECKOUT_SESSION_ID}}",
+            'cancel_url': f"{app_url}/checkout/cancelado",
+        }
+        if customer_id:
+            checkout_kwargs['customer'] = customer_id
+        elif usuario:
+            checkout_kwargs['customer_email'] = usuario['email']
+
+        checkout_session = stripe.checkout.Session.create(**checkout_kwargs)
         send_audit_log('iniciar_checkout_sentinela_pro', user_id)
         return redirect(checkout_session.url, code=303)
     except Exception as e:
@@ -1000,7 +1233,7 @@ def checkout_sucesso():
     user_id = session['user_id']
     send_audit_log('retorno_checkout_sucesso', user_id)
     session['is_premium'] = get_user_premium_status(user_id)
-    flash("🎉 Assinatura Sentinela Pro ativada! Bem-vindo à escuta de emergência em tempo real.")
+    flash("🎉 Assinatura confirmada com sucesso! Seus benefícios já estão ativos.")
     return redirect(url_for('perfil', user_id=user_id))
 
 @app.route('/checkout/cancelado')
@@ -1012,13 +1245,248 @@ def checkout_cancelado():
     flash("Processo de assinatura cancelado. Nenhuma cobrança foi gerada.")
     return redirect(url_for('perfil', user_id=user_id))
 
+@app.route('/assinatura/portal', methods=['GET', 'POST'])
+@app.route('/api/billing/portal', methods=['POST'])
+def abrir_portal_cliente():
+    """
+    Abre o Stripe Customer Portal (Billing Portal) para autoatendimento:
+    Permite trocar cartão, alterar planos ou cancelar assinatura por conta própria.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    dados = obter_dados_assinatura(user_id)
+    customer_id = dados.get('stripe_customer_id')
+
+    stripe_key = os.getenv('STRIPE_SECRET_KEY')
+    if stripe_key:
+        stripe.api_key = stripe_key
+
+    app_url = os.getenv('APP_URL') or request.host_url.rstrip('/')
+    return_url = f"{app_url}/perfil/{user_id}"
+
+    if not customer_id and stripe_key:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT email, nome FROM usuarios WHERE id = %s", (user_id,))
+            u = cursor.fetchone()
+            if u:
+                novo_cust = stripe.Customer.create(
+                    email=u['email'],
+                    name=u['nome'],
+                    metadata={'user_id': str(user_id)}
+                )
+                customer_id = novo_cust.id
+                cursor.execute("UPDATE usuarios SET stripe_customer_id = %s WHERE id = %s", (customer_id, user_id))
+                conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"[Portal Stripe] Erro ao criar customer: {e}")
+
+    if customer_id and stripe_key:
+        try:
+            portal_session = stripe.billing_portal.Session.create(
+                customer=customer_id,
+                return_url=return_url
+            )
+            send_audit_log('portal_faturamento_aberto', user_id)
+            if request.is_json:
+                return jsonify({'url': portal_session.url}), 200
+            return redirect(portal_session.url, code=303)
+        except Exception as e:
+            print(f"[Portal Stripe Error] {e}")
+            flash(f"Portal de autoatendimento Stripe indisponível no momento: {e}. Utilize os controles diretos de troca de plano ou cancelamento.", "warning")
+            return redirect(url_for('perfil', user_id=user_id))
+    else:
+        flash("Configuração do Stripe ausente ou assinatura ainda não iniciada. Utilize a gestão direta de planos.", "info")
+        return redirect(url_for('perfil', user_id=user_id))
+
+@app.route('/assinatura/trocar-plano', methods=['POST'])
+def trocar_plano():
+    """
+    Permite ao cliente trocar de plano (upgrade ou downgrade) por conta própria diretamente na aplicação.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    novo_plano = request.form.get('plano') or (request.get_json() or {}).get('plano')
+
+    if novo_plano not in PLANOS_DISPONIVEIS:
+        flash("Plano selecionado inválido.", "danger")
+        return redirect(url_for('perfil', user_id=user_id))
+
+    if novo_plano == 'free':
+        return cancelar_assinatura()
+
+    dados = obter_dados_assinatura(user_id)
+    plano_antigo = dados['plano_contratado']
+
+    sub_id = dados.get('stripe_subscription_id')
+    stripe_key = os.getenv('STRIPE_SECRET_KEY')
+    if stripe_key and sub_id:
+        try:
+            stripe.api_key = stripe_key
+            stripe.Subscription.modify(
+                sub_id,
+                metadata={'user_id': str(user_id), 'plano': novo_plano}
+            )
+        except Exception as e:
+            print(f"[Troca Plano Stripe] Aviso: {e}")
+
+    novo_valor = PLANOS_DISPONIVEIS[novo_plano]['valor_mensal_centavos']
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE usuarios 
+            SET plano = %s, status_assinatura = 'active', is_premium = 1,
+                assinatura_valor_centavos = %s
+            WHERE id = %s
+        """, (novo_plano, novo_valor, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        send_audit_log(f'troca_plano_{plano_antigo}_para_{novo_plano}', user_id)
+        flash(f"🎉 Plano alterado com sucesso para {PLANOS_DISPONIVEIS[novo_plano]['rotulo']}! Seus novos limites já estão ativos.", "success")
+    except Exception as e:
+        print(f"[Troca Plano Erro] {e}")
+        flash(f"Erro ao trocar plano: {e}", "danger")
+
+    if request.is_json:
+        return jsonify({'success': True, 'plano': novo_plano}), 200
+    return redirect(url_for('perfil', user_id=user_id))
+
+@app.route('/assinatura/cancelar', methods=['POST'])
+def cancelar_assinatura():
+    """
+    Permite ao cliente cancelar a assinatura sozinho a qualquer momento.
+    Retorna o usuário ao Plano Comunitário Gratuito.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    dados = obter_dados_assinatura(user_id)
+
+    sub_id = dados.get('stripe_subscription_id')
+    stripe_key = os.getenv('STRIPE_SECRET_KEY')
+    if stripe_key and sub_id:
+        try:
+            stripe.api_key = stripe_key
+            stripe.Subscription.cancel(sub_id)
+        except Exception as e:
+            print(f"[Cancelamento Stripe] Aviso: {e}")
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE usuarios 
+            SET plano = 'free', is_premium = 0, status_assinatura = 'canceled',
+                assinatura_valor_centavos = 0
+            WHERE id = %s
+        """, (user_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        send_audit_log(f'cancelamento_assinatura_usuario_{user_id}', user_id)
+        flash("Sua assinatura foi cancelada com sucesso. Você retornou ao Plano Comunitário Gratuito.", "info")
+    except Exception as e:
+        print(f"[Cancelamento Erro] {e}")
+        flash(f"Erro ao cancelar assinatura: {e}", "danger")
+
+    if request.is_json:
+        return jsonify({'success': True, 'plano': 'free'}), 200
+    return redirect(url_for('perfil', user_id=user_id))
+
+@app.route('/api/me/plano', methods=['GET'])
+def api_me_plano():
+    """Retorna os dados do plano e direitos efetivos do usuário autenticado."""
+    user_id = session.get('user_id') or request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({'error': 'Não autenticado'}), 401
+    dados = obter_dados_assinatura(int(user_id))
+    return jsonify({
+        'success': True,
+        'user_id': int(user_id),
+        'plano': dados['plano_efetivo'],
+        'plano_contratado': dados['plano_contratado'],
+        'status_assinatura': dados['status_assinatura'],
+        'is_premium': dados['is_premium'],
+        'direitos': dados['direitos']
+    }), 200
+
+@app.route('/admin/assinaturas', methods=['GET'])
+def admin_assinaturas():
+    """Painel Administrativo de Métricas SaaS: MRR, distribuição de planos e auditoria."""
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    user_role = get_user_role(session['user_id'])
+    if user_role != 'admin':
+        send_audit_log('403_acesso_negado_admin_assinaturas', session['user_id'])
+        abort(403, description="Acesso exclusivo para administradores do sistema.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT COALESCE(plano, 'free') as plano, COUNT(*) as total
+        FROM usuarios
+        GROUP BY plano
+    """)
+    contagem_planos = {row['plano']: row['total'] for row in cursor.fetchall()}
+
+    cursor.execute("""
+        SELECT COUNT(*) as ativas, COALESCE(SUM(assinatura_valor_centavos), 0) as mrr_centavos
+        FROM usuarios
+        WHERE status_assinatura IN ('active', 'trialing') AND is_premium = 1
+    """)
+    resumo_mrr = cursor.fetchone() or {'ativas': 0, 'mrr_centavos': 0}
+    mrr_reais = (resumo_mrr['mrr_centavos'] or 0) / 100.0
+
+    cursor.execute("""
+        SELECT COUNT(*) as total_inadimplentes
+        FROM usuarios
+        WHERE status_assinatura = 'past_due'
+    """)
+    inadimplentes_count = (cursor.fetchone() or {}).get('total_inadimplentes', 0)
+
+    try:
+        cursor.execute("""
+            SELECT event_id, tipo, recebido_em
+            FROM stripe_eventos
+            ORDER BY recebido_em DESC
+            LIMIT 15
+        """)
+        eventos_stripe = cursor.fetchall()
+    except Exception:
+        eventos_stripe = []
+
+    cursor.close()
+    conn.close()
+
+    return render_template(
+        'admin_assinaturas.html',
+        contagem_planos=contagem_planos,
+        total_ativas=resumo_mrr['ativas'] or 0,
+        mrr_reais=mrr_reais,
+        inadimplentes_count=inadimplentes_count,
+        eventos_stripe=eventos_stripe
+    )
+
 @app.route('/webhook/stripe', methods=['POST'])
 @app.route('/stripe/webhook', methods=['POST'])
 @app.route('/api/stripe/webhook', methods=['POST'])
 def stripe_webhook():
     """
-    Recebe eventos de webhook assinados do Stripe com HMAC SHA256.
-    Promove ou encerra planos sem jamais armazenar dados sensíveis de pagamento.
+    Recebe eventos de webhook assinados do Stripe com HMAC SHA256 e garante idempotência.
+    Processa o ciclo de vida completo: criação, alteração, cancelamento e falha de cobrança.
     """
     payload = request.data
     sig_header = request.headers.get('Stripe-Signature')
@@ -1041,14 +1509,40 @@ def stripe_webhook():
             return jsonify({'error': 'Payload inválido'}), 400
 
     event_dict = event if isinstance(event, dict) else (event.to_dict() if hasattr(event, 'to_dict') else dict(event))
+    event_id = event_dict.get('id')
     event_type = event_dict.get('type')
     data_object = event_dict.get('data', {}).get('object', {})
-    print(f"[Stripe Webhook] Evento recebido: {event_type}")
+    print(f"[Stripe Webhook] Evento recebido: {event_type} (id: {event_id})")
+
+    # Idempotência: Se o mesmo evento chegar duplicado, responde 200 sem reprocessar
+    if event_id:
+        try:
+            conn_idemp = get_db_connection()
+            cur_idemp = conn_idemp.cursor()
+            try:
+                cur_idemp.execute("INSERT INTO stripe_eventos (event_id, tipo) VALUES (%s, %s)", (event_id, event_type))
+                conn_idemp.commit()
+            except Exception as idemp_err:
+                cur_idemp.close()
+                conn_idemp.close()
+                err_str = str(idemp_err).lower()
+                if 'integrityerror' in type(idemp_err).__name__.lower() or 'duplicate' in err_str or '1062' in err_str:
+                    print(f"[Stripe Webhook] Evento duplicado ignorado: {event_id}")
+                    return jsonify({'received': True, 'duplicate': True}), 200
+            else:
+                cur_idemp.close()
+                conn_idemp.close()
+        except Exception:
+            pass
 
     if event_type == 'checkout.session.completed':
         user_id = data_object.get('client_reference_id') or (data_object.get('metadata') or {}).get('user_id')
         customer_id = data_object.get('customer')
         subscription_id = data_object.get('subscription')
+        metadata = data_object.get('metadata') or {}
+        plano_meta = metadata.get('plano', 'sentinela_pro')
+        plano_nome = 'central' if 'central' in plano_meta else 'pro'
+        valor_mensal = data_object.get('amount_total') or PLANOS_DISPONIVEIS[plano_nome]['valor_mensal_centavos']
 
         if user_id:
             try:
@@ -1056,9 +1550,11 @@ def stripe_webhook():
                 cursor = conn.cursor()
                 cursor.execute("""
                     UPDATE usuarios
-                    SET is_premium = 1, stripe_customer_id = %s, stripe_subscription_id = %s
+                    SET is_premium = 1, plano = %s, status_assinatura = 'active',
+                        stripe_customer_id = %s, stripe_subscription_id = %s,
+                        assinatura_valor_centavos = %s
                     WHERE id = %s
-                """, (customer_id, subscription_id, user_id))
+                """, (plano_nome, customer_id, subscription_id, valor_mensal, user_id))
                 conn.commit()
                 cursor.close()
                 conn.close()
@@ -1068,6 +1564,53 @@ def stripe_webhook():
                 print(f"[Stripe Webhook] Erro ao persistir no banco: {e}")
                 return jsonify({'error': 'Erro ao atualizar banco'}), 500
 
+    elif event_type == 'customer.subscription.updated':
+        subscription_id = data_object.get('id')
+        customer_id = data_object.get('customer')
+        status = (data_object.get('status') or 'active').lower()
+        metadata = data_object.get('metadata') or {}
+        plano_meta = metadata.get('plano', 'pro')
+
+        items = data_object.get('items', {}).get('data', [])
+        valor = None
+        if items:
+            p = items[0].get('price', {})
+            valor = p.get('unit_amount')
+
+        plano_final = 'central' if (plano_meta == 'central' or (valor and valor >= 2000)) else 'pro'
+        valor_final = valor or PLANOS_DISPONIVEIS[plano_final]['valor_mensal_centavos']
+
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            if status in STATUS_ATIVOS:
+                cursor.execute("""
+                    UPDATE usuarios 
+                    SET plano = %s, status_assinatura = %s, is_premium = 1,
+                        assinatura_valor_centavos = %s
+                    WHERE stripe_subscription_id = %s OR stripe_customer_id = %s
+                """, (plano_final, status, valor_final, subscription_id, customer_id))
+            elif status == 'past_due':
+                cursor.execute("""
+                    UPDATE usuarios 
+                    SET status_assinatura = 'past_due', is_premium = 0
+                    WHERE stripe_subscription_id = %s OR stripe_customer_id = %s
+                """, (subscription_id, customer_id))
+            else:
+                cursor.execute("""
+                    UPDATE usuarios 
+                    SET plano = 'free', status_assinatura = %s, is_premium = 0,
+                        assinatura_valor_centavos = 0
+                    WHERE stripe_subscription_id = %s OR stripe_customer_id = %s
+                """, (status, subscription_id, customer_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            send_audit_log(f'assinatura_atualizada_{status}', customer_id or subscription_id)
+        except Exception as e:
+            print(f"[Stripe Webhook] Erro ao processar customer.subscription.updated: {e}")
+            return jsonify({'error': 'Erro ao atualizar banco'}), 500
+
     elif event_type in ['customer.subscription.deleted', 'customer.subscription.paused']:
         subscription_id = data_object.get('id')
         customer_id = data_object.get('customer')
@@ -1075,7 +1618,9 @@ def stripe_webhook():
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE usuarios SET is_premium = 0
+                UPDATE usuarios 
+                SET plano = 'free', status_assinatura = 'canceled', is_premium = 0,
+                    assinatura_valor_centavos = 0
                 WHERE stripe_subscription_id = %s OR stripe_customer_id = %s
             """, (subscription_id, customer_id))
             conn.commit()
@@ -1084,6 +1629,25 @@ def stripe_webhook():
             send_audit_log(f'cancelamento_sentinela_pro_{subscription_id}')
         except Exception as e:
             print(f"[Stripe Webhook] Erro ao desativar assinatura: {e}")
+            return jsonify({'error': 'Erro ao atualizar banco'}), 500
+
+    elif event_type == 'invoice.payment_failed':
+        customer_id = data_object.get('customer')
+        subscription_id = data_object.get('subscription')
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE usuarios 
+                SET status_assinatura = 'past_due', is_premium = 0
+                WHERE stripe_customer_id = %s OR stripe_subscription_id = %s
+            """, (customer_id, subscription_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            send_audit_log(f'pagamento_falhou_{customer_id}', customer_id)
+        except Exception as e:
+            print(f"[Stripe Webhook] Erro ao registrar falha de pagamento: {e}")
             return jsonify({'error': 'Erro ao atualizar banco'}), 500
 
     return jsonify({'received': True}), 200

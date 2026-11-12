@@ -55,16 +55,69 @@
                         </span>
                     </div>
 
-                    {% if usuario.is_premium %}
-                        <div class="badge bg-gold text-dark fw-bold px-3 py-2 rounded-pill mb-2 d-inline-flex align-items-center gap-1">
-                            <i class="bi bi-star-fill"></i> ASSINANTE SENTINELA PRO
+                    <!-- Status e Informações do Plano SaaS -->
+                    <div class="p-3 bg-dark rounded border border-dark mb-3 text-start">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="text-secondary small fw-bold text-uppercase">Plano Atual</span>
+                            {% if assinatura and assinatura.inadimplente %}
+                                <span class="badge bg-danger text-light">PAGAMENTO PENDENTE</span>
+                            {% elif usuario.is_premium %}
+                                <span class="badge bg-gold text-dark fw-bold"><i class="bi bi-star-fill me-1"></i>ATIVO</span>
+                            {% else %}
+                                <span class="badge bg-secondary">GRATUITO</span>
+                            {% endif %}
                         </div>
-                        <p class="text-gold small mb-3">Streaming em tempo real sem delay e favoritos ilimitados</p>
-                    {% else %}
-                        <div class="badge bg-secondary px-3 py-2 rounded-pill mb-3">
-                            PLANO COMUNITÁRIO (FREE)
+
+                        <h5 class="text-light fw-bold mb-1">
+                            {% if usuario.plano == 'central' %}
+                                <span class="text-gold"><i class="bi bi-shield-fill-check me-1"></i>Central Tática VIP</span>
+                            {% elif usuario.is_premium or usuario.plano == 'pro' %}
+                                <span class="text-cyan"><i class="bi bi-broadcast-pin me-1"></i>Sentinela Pro</span>
+                            {% else %}
+                                <span class="text-light"><i class="bi bi-person-fill me-1"></i>Comunitário Free</span>
+                            {% endif %}
+                        </h5>
+
+                        {% if assinatura and assinatura.inadimplente %}
+                            <div class="alert alert-danger py-2 px-3 small my-2">
+                                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                                Cobrança pendente no Stripe. Benefícios Pro temporariamente suspensos. Regularize sua forma de pagamento.
+                            </div>
+                        {% endif %}
+
+                        <div class="text-secondary small mb-2">
+                            {% if usuario.plano == 'central' and usuario.is_premium %}
+                                Streaming prioritário sem delay, downloads de áudio liberados e favoritos ilimitados.
+                            {% elif usuario.is_premium or usuario.plano == 'pro' %}
+                                Streaming em tempo real sem delay e favoritos ilimitados.
+                            {% else %}
+                                Delay de 10 min. Limite de até 3 frequências favoritas.
+                            {% endif %}
                         </div>
-                    {% endif %}
+
+                        {% if is_owner and (usuario.is_premium or usuario.stripe_customer_id) %}
+                            <div class="d-grid gap-2 mt-3 pt-2 border-top border-secondary border-opacity-25">
+                                <!-- Botão Portal Stripe (Trocar cartão, ver faturas, etc.) -->
+                                <form action="{{ url_for('abrir_portal_cliente') }}" method="POST">
+                                    <button type="submit" class="btn btn-outline-cyan btn-sm w-100">
+                                        <i class="bi bi-credit-card me-1"></i> Gerenciar Assinatura (Portal Stripe)
+                                    </button>
+                                </form>
+
+                                <!-- Botão Trocar de Plano (Self-service Upgrade/Downgrade) -->
+                                <button type="button" class="btn btn-outline-warning btn-sm w-100" data-bs-toggle="modal" data-bs-target="#trocarPlanoModal">
+                                    <i class="bi bi-arrow-left-right me-1"></i> Trocar de Plano
+                                </button>
+
+                                <!-- Botão Cancelar Assinatura (Self-service Cancel) -->
+                                <form action="{{ url_for('cancelar_assinatura') }}" method="POST" onsubmit="return confirm('Tem certeza de que deseja cancelar sua assinatura? Você perderá o streaming sem delay e o acervo de gravações.');">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+                                        <i class="bi bi-x-circle me-1"></i> Cancelar Assinatura Sozinho
+                                    </button>
+                                </form>
+                            </div>
+                        {% endif %}
+                    </div>
 
                     <p class="text-secondary small mb-3">{{ usuario.bio or 'Nenhuma biografia informada.' }}</p>
 
@@ -74,14 +127,31 @@
                         </button>
 
                         {% if not usuario.is_premium %}
-                            <div class="p-3 bg-dark rounded border border-warning text-start">
-                                <div class="text-gold fw-bold small mb-1"><i class="bi bi-lightning-charge-fill me-1"></i> Upgrade Sentinela Pro</div>
-                                <div class="text-secondary" style="font-size: 0.8em; line-height: 1.4;">
-                                    Ouça despachos de resgate e rodovias sem delay de 10 min por apenas <strong>R$ 9,90/mês</strong> via Stripe.
+                            <!-- Opções de Assinatura para Usuários Free -->
+                            <div class="p-3 bg-dark rounded border border-warning text-start mb-3">
+                                <div class="text-gold fw-bold small mb-2"><i class="bi bi-lightning-charge-fill me-1"></i> Assinaturas Recorrentes</div>
+                                
+                                <div class="mb-3 p-2 rounded bg-surface border border-secondary border-opacity-50">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <strong class="text-light small">Sentinela Pro</strong>
+                                        <span class="text-cyan small fw-bold">R$ 9,90/mês</span>
+                                    </div>
+                                    <p class="text-secondary mb-2" style="font-size: 0.75em;">Zero delay e favoritos ilimitados.</p>
+                                    <a href="{{ url_for('checkout') }}?plano=pro" class="btn btn-cyan btn-sm w-100 fw-bold">
+                                        Assinar Pro
+                                    </a>
                                 </div>
-                                <a href="{{ url_for('checkout') }}" class="btn btn-gold btn-sm w-100 mt-2 fw-bold">
-                                    Assinar Sentinela Pro
-                                </a>
+
+                                <div class="p-2 rounded bg-surface border border-warning border-opacity-50">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <strong class="text-gold small">Central Tática VIP</strong>
+                                        <span class="text-gold small fw-bold">R$ 29,90/mês</span>
+                                    </div>
+                                    <p class="text-secondary mb-2" style="font-size: 0.75em;">Prioridade máxima e download de despachos.</p>
+                                    <a href="{{ url_for('checkout') }}?plano=central" class="btn btn-gold btn-sm w-100 fw-bold">
+                                        Assinar Central Tática
+                                    </a>
+                                </div>
                             </div>
                         {% endif %}
                     {% endif %}
@@ -191,6 +261,51 @@
                         <div class="modal-footer border-dark">
                             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
                             <button type="submit" class="btn btn-cyan fw-bold">Salvar Alterações</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        <!-- Modal Trocar de Plano -->
+        <div class="modal fade" id="trocarPlanoModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content bg-surface border-dark text-light">
+                    <div class="modal-header border-dark">
+                        <h5 class="modal-title fw-bold text-cyan">Trocar de Plano SaaS</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <form action="{{ url_for('trocar_plano') }}" method="POST">
+                        <div class="modal-body">
+                            <p class="text-secondary small mb-3">
+                                Selecione o novo plano desejado para sua conta. O novo pacote de benefícios e limites passa a valer imediatamente:
+                            </p>
+
+                            <div class="form-check p-3 rounded bg-dark border border-secondary mb-2">
+                                <input class="form-check-input" type="radio" name="plano" id="optFree" value="free" {% if usuario.plano == 'free' and not usuario.is_premium %}checked{% endif %}>
+                                <label class="form-check-label text-light w-100 ms-2" for="optFree">
+                                    <div class="fw-bold">Comunitário (Free) — R$ 0,00</div>
+                                    <div class="text-secondary small">Até 3 frequências favoritas e delay de 10 min.</div>
+                                </label>
+                            </div>
+
+                            <div class="form-check p-3 rounded bg-dark border border-cyan mb-2">
+                                <input class="form-check-input" type="radio" name="plano" id="optPro" value="pro" {% if usuario.plano == 'pro' or (usuario.is_premium and usuario.plano != 'central') %}checked{% endif %}>
+                                <label class="form-check-label text-light w-100 ms-2" for="optPro">
+                                    <div class="fw-bold text-cyan">Sentinela Pro — R$ 9,90/mês</div>
+                                    <div class="text-secondary small">Zero delay (tempo real) e favoritos ilimitados.</div>
+                                </label>
+                            </div>
+
+                            <div class="form-check p-3 rounded bg-dark border border-warning">
+                                <input class="form-check-input" type="radio" name="plano" id="optCentral" value="central" {% if usuario.plano == 'central' %}checked{% endif %}>
+                                <label class="form-check-label text-light w-100 ms-2" for="optCentral">
+                                    <div class="fw-bold text-gold">Central Tática VIP — R$ 29,90/mês</div>
+                                    <div class="text-secondary small">Prioridade máxima, download de despachos e canais táticos.</div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="modal-footer border-dark">
+                            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+                            <button type="submit" class="btn btn-cyan fw-bold">Confirmar Alteração de Plano</button>
                         </div>
                     </form>
                 </div>

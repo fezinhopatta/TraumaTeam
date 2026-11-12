@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel SaaS e Assinaturas — Admin OpenWave</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="theme-dark">
+
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span> <span class="badge bg-danger ms-1 text-light" style="font-size:0.65em;">ADMIN</span></span>
+            </a>
+            <div class="d-flex align-items-center gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Dashboard</a>
+                <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-info btn-sm"><i class="bi bi-journal-text me-1"></i> Auditoria</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">Sair</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container py-4">
+
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h3 class="text-light fw-bold mb-1"><i class="bi bi-graph-up-arrow text-cyan me-2"></i>Métricas de Faturamento e Assinaturas SaaS</h3>
+                <p class="text-secondary small mb-0">Visão consolidada de MRR, ciclo de vida das assinaturas e webhooks processados do Stripe.</p>
+            </div>
+            <span class="badge bg-dark border border-secondary text-cyan px-3 py-2 font-monospace">
+                STRIPE: TEST MODE ACTIVE
+            </span>
+        </div>
+
+        <!-- Cards de Métricas Principais -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="card bg-surface border-dark p-3 text-center">
+                    <span class="text-secondary small fw-semibold text-uppercase">Receita Recorrente (MRR)</span>
+                    <h2 class="text-gold fw-bold my-2">R$ {{ '%.2f'|format(mrr_reais)|replace('.', ',') }}</h2>
+                    <span class="text-secondary small">/ mês estimado</span>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-surface border-dark p-3 text-center">
+                    <span class="text-secondary small fw-semibold text-uppercase">Assinaturas Ativas</span>
+                    <h2 class="text-cyan fw-bold my-2">{{ total_ativas }}</h2>
+                    <span class="text-secondary small">planos Pro e Central</span>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-surface border-dark p-3 text-center">
+                    <span class="text-secondary small fw-semibold text-uppercase">Inadimplentes (Past Due)</span>
+                    <h2 class="text-danger fw-bold my-2">{{ inadimplentes_count }}</h2>
+                    <span class="text-secondary small">benefícios suspensos</span>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-surface border-dark p-3 text-center">
+                    <span class="text-secondary small fw-semibold text-uppercase">Usuários Comunitários (Free)</span>
+                    <h2 class="text-light fw-bold my-2">{{ contagem_planos.get('free', 0) }}</h2>
+                    <span class="text-secondary small">potenciais clientes de upgrade</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Distribuição por Plano -->
+        <div class="row g-4 mb-4">
+            <div class="col-md-6">
+                <div class="card bg-surface border-dark p-4 h-100">
+                    <h5 class="text-light fw-bold mb-3"><i class="bi bi-pie-chart-fill text-cyan me-2"></i>Base de Usuários por Plano</h5>
+                    <div class="list-group list-group-flush bg-transparent">
+                        <div class="list-group-item bg-dark border-dark text-light d-flex justify-content-between align-items-center rounded mb-2">
+                            <div>
+                                <span class="badge bg-secondary me-2">FREE</span>
+                                <span>Plano Comunitário (R$ 0,00)</span>
+                            </div>
+                            <span class="fw-bold">{{ contagem_planos.get('free', 0) }} usuários</span>
+                        </div>
+                        <div class="list-group-item bg-dark border-dark text-light d-flex justify-content-between align-items-center rounded mb-2">
+                            <div>
+                                <span class="badge bg-cyan text-dark fw-bold me-2">PRO</span>
+                                <span>Sentinela Pro (R$ 9,90/mês)</span>
+                            </div>
+                            <span class="fw-bold text-cyan">{{ contagem_planos.get('pro', 0) }} usuários</span>
+                        </div>
+                        <div class="list-group-item bg-dark border-dark text-light d-flex justify-content-between align-items-center rounded">
+                            <div>
+                                <span class="badge bg-gold text-dark fw-bold me-2">CENTRAL</span>
+                                <span>Central Tática VIP (R$ 29,90/mês)</span>
+                            </div>
+                            <span class="fw-bold text-gold">{{ contagem_planos.get('central', 0) }} usuários</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tabela de Auditoria de Webhooks Stripe -->
+            <div class="col-md-6">
+                <div class="card bg-surface border-dark p-4 h-100">
+                    <h5 class="text-light fw-bold mb-3"><i class="bi bi-shield-check text-success me-2"></i>Histórico de Eventos Stripe (Idempotência)</h5>
+                    {% if eventos_stripe %}
+                        <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                            <table class="table table-dark table-sm table-striped align-middle mb-0 font-monospace small">
+                                <thead>
+                                    <tr>
+                                        <th>Evento</th>
+                                        <th>Event ID</th>
+                                        <th>Recebido Em</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for ev in eventos_stripe %}
+                                        <tr>
+                                            <td><span class="badge bg-dark border border-secondary text-cyan">{{ ev.tipo }}</span></td>
+                                            <td class="text-secondary" style="font-size:0.85em;">{{ ev.event_id }}</td>
+                                            <td class="text-secondary">{{ ev.recebido_em }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <p class="text-secondary small mb-0">Nenhum evento do Stripe registrado ainda na tabela de idempotência.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-5">
+        <div class="container">
+            <p class="mb-0">📡 OpenWave — Painel de Administração SaaS orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a></p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

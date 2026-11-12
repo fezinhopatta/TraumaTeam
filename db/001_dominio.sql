@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS usuarios (
     bio TEXT,
     avatar_url VARCHAR(255),
     is_premium BOOLEAN NOT NULL DEFAULT 0,
+    plano VARCHAR(20) NOT NULL DEFAULT 'free', -- 'free', 'pro', 'central'
+    status_assinatura VARCHAR(30) NULL DEFAULT 'active', -- 'active', 'trialing', 'past_due', 'canceled'
+    assinatura_valor_centavos INT NULL DEFAULT 0,
     stripe_customer_id VARCHAR(255),
     stripe_subscription_id VARCHAR(255),
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -74,6 +77,13 @@ CREATE TABLE IF NOT EXISTS reset_tokens (
     expira_em DATETIME NOT NULL,
     usado BOOLEAN NOT NULL DEFAULT 0,
     FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. Tabela de Idempotência para Eventos do Stripe
+CREATE TABLE IF NOT EXISTS stripe_eventos (
+    event_id VARCHAR(100) NOT NULL PRIMARY KEY,
+    tipo VARCHAR(80) NOT NULL,
+    recebido_em TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================

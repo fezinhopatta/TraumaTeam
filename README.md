@@ -139,14 +139,38 @@ O MinIO armazena dois tipos de arquivos do domínio:
 
 ---
 
-## 7. Modelo de Monetização com Stripe (Sentinela Pro)
+## 7. Modelo SaaS de Assinaturas Recorrentes (Stripe Lifecycle)
 
-* **Plano Comunitário (Gratuito - R$ 0,00/mês):** Acesso a canais públicos, delay proposital de 10 minutos e limite de 3 canais favoritos.
-* **Plano Sentinela Pro (R$ 9,90/mês):**
-  * Streaming em tempo real com **baixa latência (zero delay)**.
-  * **Favoritos ilimitados** para rotas e monitoramento residencial/comercial.
-  * Acesso ao acervo de gravações das últimas 48h.
-  * Processamento via **Stripe Checkout** e confirmação via webhook assinado criptograficamente com HMAC SHA-256 (`/webhook/stripe`).
+Diferente do modelo legado (de 09/10) que realizava cobrança única e marcava apenas uma flag booleana (`is_premium = 1`), o **OpenWave SaaS** opera sob um motor completo de assinaturas recorrentes mensais, controle estrito de cotas por requisição e autonomia para o próprio cliente:
+
+### 7.1 Grade de Planos SaaS
+* **Plano Comunitário (Gratuito - R$ 0,00/mês):** Acesso a frequências públicas, delay proposital de 10 minutos (600s), limite de até 3 canais favoritos salvos e sem acervo histórico.
+* **Plano Sentinela Pro (R$ 9,90/mês):** Streaming de baixa latência em **tempo real (zero delay)**, **favoritos ilimitados**, acervo de despachos das últimas 48h e selo de assinante.
+* **Plano Central Tática VIP (R$ 29,90/mês):** Prioridade máxima de largura de banda, **download direto de arquivos de ocorrência (.mp3)**, frequências táticas exclusivas e monitoramento institucional.
+
+### 7.2 O que o Plano Permite a Cada Requisição (Entitlement Policy)
+* O sistema não confia em dados estáticos na sessão: **a cada requisição** de favoritar, ouvir stream ou acessar gravações, a função `obter_dados_assinatura(user_id)` valida o status relacional no MariaDB (`plano` e `status_assinatura`).
+* **Trava de Inadimplência:** Se o webhook do Stripe reportar status `past_due`, `canceled` ou `unpaid`, os direitos do usuário retornam instantaneamente para os limites do plano Free, impedindo o usufruto de recursos Pro sem pagamento ativo.
+* **Bloqueio Educativo com HTTP 403:** Tentativas de favoritar mais de 3 canais no plano Free são barradas com **HTTP 403 Forbidden**, apresentando a tela [`templates/limite.html`](templates/limite.html) com detalhamento da cota e opções de upgrade.
+
+### 7.3 Autoatendimento do Cliente (Trocar de Plano e Cancelar Sozinho)
+* **Portal do Cliente Stripe (`POST /assinatura/portal` ou `/api/billing/portal`):** Redireciona o cliente para o Billing Portal oficial do Stripe, permitindo atualizar cartões de crédito, baixar recibos e faturas fiscais.
+* **Troca de Plano Direta (`POST /assinatura/trocar-plano`):** Permite ao assinante alternar livremente (upgrade/downgrade) entre Sentinela Pro e Central Tática VIP, sincronizando os metadados no Stripe e ajustando direitos imediatamente.
+* **Cancelamento Autônomo (`POST /assinatura/cancelar`):** O usuário pode cancelar a assinatura a qualquer instante sem intermédio de suporte, revertendo sua conta para o Plano Comunitário Free.
+
+### 7.4 Ciclo de Vida do Webhook e Idempotência
+O endpoint `/webhook/stripe` valida assinaturas criptográficas HMAC SHA-256 e persiste eventos na tabela `stripe_eventos`, garantindo que mensagens duplicadas sejam descartadas com status 200:
+1. `checkout.session.completed`: Ativa a assinatura do usuário, registra o `stripe_customer_id`, `stripe_subscription_id` e o plano escolhido.
+2. `customer.subscription.updated`: Sincroniza mudanças de plano ou alterações de status (`active` vs `past_due`).
+3. `customer.subscription.deleted`: Desativa os direitos Pro e reverte o usuário para o plano Free.
+4. `invoice.payment_failed`: Marca o usuário como `past_due` e suspende temporariamente os benefícios.
+
+### 7.5 Painel Administrativo SaaS (`/admin/assinaturas`)
+Exclusivo para administradores (`admin`), apresentando em tempo real:
+* **MRR (Monthly Recurring Revenue):** Receita recorrente mensal calculada dinamicamente em R$.
+* **Assinantes Ativos:** Total de usuários nos planos Pro e Central.
+* **Inadimplência:** Monitoramento de assinaturas em atraso (`past_due`).
+* **Auditoria de Eventos:** Tabela com os últimos webhooks recebidos do Stripe com timestamp.
 
 ---
 

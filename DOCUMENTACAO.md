@@ -60,9 +60,16 @@ O sistema aproveita integralmente a topologia de microsserviços estabelecida, o
 - Ouvintes gratuitos podem favoritar até 3 frequências simultâneas.
 - Ao atingir a cota, o sistema emite alerta flash com convite de upgrade para o Plano Sentinela Pro.
 
-### 2.6 Assinatura Sentinela Pro e Checkout Recorrente (Stripe)
-- Por **R$ 9,90/mês**, ouvintes desbloqueiam streaming em tempo real (baixa latência sem delay de 10 minutos), favoritos ilimitados e acervo de gravações das últimas 48h.
-- Integração via Stripe Checkout Session com confirmação por webhook assinado criptograficamente com HMAC SHA-256 (`/webhook/stripe`).
+### 2.6 Assinaturas Recorrentes SaaS, Autoatendimento e Checkout (Stripe)
+- **Grade de Planos:** `Comunitário (Free)` a R$ 0,00; `Sentinela Pro` a R$ 9,90/mês; `Central Tática VIP` a R$ 29,90/mês.
+- **Cobrança Mensal:** Checkout em modo `subscription` no Stripe gerando assinaturas recorrentes com renovação automática.
+- **Autoatendimento (Self-Service):** 
+  - Portal do Cliente Stripe (`POST /assinatura/portal`) para gestão de meios de pagamento e faturas.
+  - Troca autônoma de plano (`POST /assinatura/trocar-plano`) para upgrade e downgrade imediatos.
+  - Cancelamento autônomo (`POST /assinatura/cancelar`) com retorno imediato ao plano Free sem fricção.
+- **Verificação por Requisição:** A cada requisição, `obter_dados_assinatura(user_id)` verifica se a conta está ativa (`active` ou `trialing`). Se inadimplente (`past_due`), os direitos caem automaticamente para o plano Free.
+- **Idempotência de Webhook:** Tabela `stripe_eventos` rejeita reprocessamento de notificações repetidas.
+- **Painel SaaS Admin:** Rota `/admin/assinaturas` com métricas em tempo real de MRR (Receita Recorrente Mensal), assinantes ativos e inadimplência.
 
 ### 2.7 Painel de Auditoria e Logs (Exclusivo Admin)
 - Rota `/admin/logs` exibe em tempo real os eventos operacionais e de segurança persistidos no **Redis Streams** pelo `log-service`.
@@ -76,13 +83,13 @@ O sistema aproveita integralmente a topologia de microsserviços estabelecida, o
 
 | Serviço | Container Docker | Porta Interna | Porta Mapeada | Função |
 |---|---|---|---|---|
-| **OpenWave Core** | `catalog-service` | 5000 | 5000 (ou `${PORTA_ALUNO}`) | Web App, SSR, CRUD de Canais, Stripe Webhooks |
+| **OpenWave Core** | `catalog-service` | 5000 | 5000 (ou `${PORTA_ALUNO}`) | Web App, SSR, CRUD de Canais, SaaS Stripe Webhooks, Portal |
 | **Auth Service** | `auth-service` | 5000 | 5001 | Autenticação, RBAC, Tokens e E-mail SMTP |
 | **Log Service** | `log-service` | 5000 | 5002 | Auditoria e persistência de eventos no Redis |
 | **Redis** | `redis-service` | 6379 | - | Redis Streams de auditoria de eventos |
 | **MinIO API** | `minio` | 9000 | 9010 | S3 Object Storage para áudios e imagens |
 | **MinIO Console** | `minio` | 9001 | 9011 | Interface administrativa do MinIO |
-| **MariaDB** | Externo / VM | 3306 | - | Banco relacional para tabelas do domínio |
+| **MariaDB** | Externo / VM | 3306 | - | Banco relacional para tabelas do domínio e assinaturas |
 
 ---
 
@@ -91,8 +98,10 @@ O sistema aproveita integralmente a topologia de microsserviços estabelecida, o
 - **RN-01 (RBAC de Criação):** Se um usuário com papel `listener` tentar criar canal via tela ou `POST /api/canais`, o sistema bloqueia com **403 Forbidden** e emite log `403_permissao_negada_criar_canal`.
 - **RN-02 (Multi-Tenancy de Edição):** Se o Feeder A tentar editar ou excluir um canal de propriedade do Feeder B, o sistema bloqueia a requisição com **403 Forbidden** e emite log de segurança `403_acesso_negado_canal_alheio`.
 - **RN-03 (Isolamento de Gravações MinIO):** Apenas o operador responsável pelo canal ou administradores podem anexar gravações de áudio. Terceiros recebem **403 Forbidden**.
-- **RN-04 (Cota de Favoritos):** Ouvintes do plano comunitário gratuito estão limitados a 3 canais favoritos. Assinantes Sentinela Pro têm favoritos ilimitados.
-- **RN-05 (Webhook Seguro Stripe):** Notificações do Stripe têm assinatura verificada via `STRIPE_WEBHOOK_SECRET` com rejeição 400 em caso de payload adulterado.
+- **RN-04 (Cota por Requisição e HTTP 403):** Ouvintes do plano comunitário gratuito estão limitados a 3 canais favoritos. Ao estourar a cota, o sistema responde **403 Forbidden** e renderiza [`templates/limite.html`](templates/limite.html) com convite de upgrade.
+- **RN-05 (Webhook Seguro e Idempotência):** Notificações do Stripe têm assinatura verificada via HMAC SHA-256 (`STRIPE_WEBHOOK_SECRET`) e têm seus IDs inseridos em `stripe_eventos` para garantir que o mesmo evento nunca seja computado duas vezes.
+- **RN-06 (Trava de Inadimplência):** Usuários com `status_assinatura = 'past_due'` ou `canceled` têm seus benefícios suspensos a cada requisição, voltando aos limites do Free.
+- **RN-07 (Autonomia do Cliente):** O cliente pode trocar de plano (`/assinatura/trocar-plano`) ou cancelar sua assinatura sozinho (`/assinatura/cancelar`) a qualquer momento.
 
 ---
 
@@ -100,19 +109,20 @@ O sistema aproveita integralmente a topologia de microsserviços estabelecida, o
 
 ### Tabelas Principais (MariaDB)
 
-1. `usuarios`: Cadastro com perfis `admin`, `feeder`, `listener` e campos Stripe.
+1. `usuarios`: Cadastro com perfis `admin`, `feeder`, `listener`, além de `plano`, `status_assinatura`, `assinatura_valor_centavos`, `stripe_customer_id` e `stripe_subscription_id`.
 2. `canais`: Recurso principal contendo frequência de rádio, categoria, cidade/estado, status e vínculo ao feeder.
 3. `gravacoes_ocorrencias`: Gravações de áudio no MinIO ligadas a um canal e operador.
 4. `canais_favoritos`: Relação many-to-many entre ouvintes e canais monitorados.
-5. `reset_tokens`: Tokens temporários de redefinição de senha com validade de 30 minutos.
+5. `stripe_eventos`: Tabela de controle de idempotência contendo `event_id`, `tipo` e `recebido_em`.
+6. `reset_tokens`: Tokens temporários de redefinição de senha com validade de 30 minutos.
 
 ---
 
 ## 6. Guia de Operação e Execução de Testes
 
 ```bash
-# Execução da suíte completa de testes automatizados do OpenWave
-.\.venv\Scripts\python.exe -m unittest test_openwave_integration.py
+# Execução da suíte completa de testes automatizados do OpenWave e Stripe SaaS (23 testes aprovados)
+python -m unittest test_stripe_integration.py test_openwave_integration.py
 
 # Execução dos testes de integração do Stripe
 .\.venv\Scripts\python.exe -m unittest test_stripe_integration.py

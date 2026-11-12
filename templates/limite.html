@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Limite do Plano Atingido — OpenWave</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="theme-dark">
+
+    <header class="navbar navbar-expand-lg navbar-dark bg-surface border-bottom border-dark">
+        <div class="container">
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="{{ url_for('index') }}">
+                <span class="brand-radar"><i class="bi bi-broadcast text-cyan"></i></span>
+                <span>Open<span class="text-cyan">Wave</span></span>
+            </a>
+            <div class="d-flex align-items-center gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Dashboard</a>
+                <a href="{{ url_for('perfil', user_id=session.get('user_id')) }}" class="btn btn-outline-cyan btn-sm">Meu Perfil</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-lg-8">
+                <!-- Alerta de Limite -->
+                <div class="card bg-surface border-warning p-4 mb-4 text-center">
+                    <div class="icon-circle mb-3 mx-auto text-warning fs-1">
+                        <i class="bi bi-shield-exclamation"></i>
+                    </div>
+                    <span class="badge bg-warning text-dark px-3 py-1 rounded-pill mx-auto mb-2 fw-bold font-monospace">
+                        COTA MÁXIMA ATINGIDA (HTTP 403)
+                    </span>
+                    <h2 class="text-light fw-bold mb-2">Limite do Plano Comunitário Gratuito</h2>
+                    <p class="text-secondary mx-auto mb-3" style="max-width: 600px;">
+                        O plano <strong>Comunitário Free</strong> permite favoritar até <strong>{{ limite|default(3) }} frequências</strong> simultâneas. Você já possui <strong>{{ total|default(3) }} canais</strong> salvos.
+                    </p>
+                    <div class="d-flex justify-content-center gap-2 flex-wrap">
+                        <a href="{{ url_for('perfil', user_id=session.get('user_id')) }}" class="btn btn-outline-secondary btn-sm">
+                            <i class="bi bi-gear me-1"></i> Desfavoritar Canais no Perfil
+                        </a>
+                        <a href="{{ url_for('checkout') }}" class="btn btn-gold btn-sm fw-bold">
+                            <i class="bi bi-lightning-fill me-1"></i> Assinar Sentinela Pro — R$ 9,90/mês
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Comparação de Planos SaaS -->
+                <div class="text-center mb-4">
+                    <h4 class="text-light fw-bold">Evolua seu monitoramento de segurança</h4>
+                    <p class="text-secondary small">Escolha o plano que melhor atende à sua necessidade:</p>
+                </div>
+
+                <div class="row g-3">
+                    <!-- Sentinela Pro -->
+                    <div class="col-md-6">
+                        <div class="card bg-surface border-cyan p-4 h-100 position-relative shadow">
+                            <span class="badge bg-cyan text-dark fw-bold mb-2 align-self-start">Mais Popular</span>
+                            <h4 class="text-light fw-bold mb-1">Sentinela Pro</h4>
+                            <div class="price mb-3">
+                                <span class="fs-3 fw-bold text-cyan">R$ 9,90</span>
+                                <span class="text-secondary small">/ mês</span>
+                            </div>
+                            <ul class="list-unstyled text-light small mb-4 flex-grow-1">
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i><strong>Favoritos Ilimitados</strong></li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i><strong>Zero delay</strong> (tempo real)</li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i>Acervo de gravações das últimas 48h</li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i>Selo dourado no perfil</li>
+                            </ul>
+                            <a href="{{ url_for('checkout') }}?plano=pro" class="btn btn-cyan w-100 py-2 fw-bold">
+                                Assinar Sentinela Pro
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Central Tática VIP -->
+                    <div class="col-md-6">
+                        <div class="card bg-surface border-warning p-4 h-100 position-relative shadow">
+                            <span class="badge bg-gold text-dark fw-bold mb-2 align-self-start">Operacional Completo</span>
+                            <h4 class="text-light fw-bold mb-1">Central Tática VIP</h4>
+                            <div class="price mb-3">
+                                <span class="fs-3 fw-bold text-gold">R$ 29,90</span>
+                                <span class="text-secondary small">/ mês</span>
+                            </div>
+                            <ul class="list-unstyled text-light small mb-4 flex-grow-1">
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Tudo do Sentinela Pro</li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Prioridade máxima no stream de áudio</li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i><strong>Download direto de despachos (.mp3)</strong></li>
+                                <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Canais táticos integrados</li>
+                            </ul>
+                            <a href="{{ url_for('checkout') }}?plano=central" class="btn btn-gold w-100 py-2 fw-bold">
+                                Assinar Central Tática
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center mt-4">
+                    <a href="{{ url_for('index') }}" class="text-secondary small text-decoration-none">
+                        <i class="bi bi-arrow-left me-1"></i> Voltar ao Dashboard
+                    </a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="py-4 bg-surface border-top border-dark text-center text-secondary small mt-5">
+        <div class="container">
+            <p class="mb-0">📡 OpenWave — Projeto orientado pelo Prof. <a href="https://github.com/siriani" target="_blank" class="text-cyan text-decoration-none">@siriani</a></p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -80,17 +80,17 @@
     <section class="py-5">
         <div class="container">
             <div class="text-center mb-5">
-                <h2 class="fw-bold text-light">Escolha seu Nível de Proteção</h2>
-                <p class="text-secondary">Monitore sua cidade gratuitamente ou desbloqueie baixa latência com o Plano Sentinela Pro.</p>
+                <h2 class="fw-bold text-light">Escolha seu Nível de Proteção SaaS</h2>
+                <p class="text-secondary">Assinaturas mensais recorrentes com total autonomia para trocar de plano ou cancelar a qualquer momento.</p>
             </div>
-            <div class="row g-4 justify-content-center" style="max-width: 900px; margin: 0 auto;">
+            <div class="row g-4 justify-content-center">
                 <!-- Plano Free -->
-                <div class="col-md-6">
-                    <div class="pricing-card p-4 rounded-3 h-100 border border-dark bg-surface">
-                        <span class="badge bg-secondary mb-2">Comunitário</span>
+                <div class="col-lg-4 col-md-6">
+                    <div class="pricing-card p-4 rounded-3 h-100 border border-dark bg-surface d-flex flex-column">
+                        <span class="badge bg-secondary mb-2 align-self-start">Comunitário</span>
                         <h3 class="text-light mb-1">Gratuito</h3>
                         <div class="price mb-4"><span class="fs-2 fw-bold text-light">R$ 0</span> <span class="text-secondary">/ mês</span></div>
-                        <ul class="list-unstyled text-secondary small mb-4">
+                        <ul class="list-unstyled text-secondary small mb-4 flex-grow-1">
                             <li class="mb-2"><i class="bi bi-check text-cyan me-2"></i>Acesso a canais abertos de emergência</li>
                             <li class="mb-2"><i class="bi bi-check text-cyan me-2"></i>Até 3 frequências favoritas salvas</li>
                             <li class="mb-2"><i class="bi bi-dash text-secondary me-2"></i>Delay de 10 minutos na transmissão</li>
@@ -100,18 +100,33 @@
                     </div>
                 </div>
                 <!-- Plano Pro -->
-                <div class="col-md-6">
-                    <div class="pricing-card p-4 rounded-3 h-100 border border-cyan bg-surface position-relative shadow-lg">
-                        <span class="badge bg-cyan text-dark fw-bold mb-2">Recomendado</span>
+                <div class="col-lg-4 col-md-6">
+                    <div class="pricing-card p-4 rounded-3 h-100 border border-cyan bg-surface position-relative shadow-lg d-flex flex-column">
+                        <span class="badge bg-cyan text-dark fw-bold mb-2 align-self-start">Mais Popular</span>
                         <h3 class="text-light mb-1">Sentinela Pro</h3>
                         <div class="price mb-4"><span class="fs-2 fw-bold text-cyan">R$ 9,90</span> <span class="text-secondary">/ mês</span></div>
-                        <ul class="list-unstyled text-light small mb-4">
+                        <ul class="list-unstyled text-light small mb-4 flex-grow-1">
                             <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i><strong>Tempo real sem delay</strong> de 10 minutos</li>
                             <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i><strong>Favoritos ilimitados</strong> para sua rota</li>
                             <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i><strong>Arquivo de ocorrências das últimas 48h</strong> no MinIO</li>
-                            <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i>Selo Sentinela Pro e prioridade no stream</li>
+                            <li class="mb-2"><i class="bi bi-check-circle-fill text-cyan me-2"></i>Selo Sentinela Pro no perfil</li>
                         </ul>
-                        <a href="{{ url_for('register') }}" class="btn btn-cyan w-100 py-2 fw-bold">Assinar com Stripe</a>
+                        <a href="{{ url_for('register') }}" class="btn btn-cyan w-100 py-2 fw-bold">Assinar Sentinela Pro</a>
+                    </div>
+                </div>
+                <!-- Plano Central Tática -->
+                <div class="col-lg-4 col-md-6">
+                    <div class="pricing-card p-4 rounded-3 h-100 border border-warning bg-surface position-relative shadow-lg d-flex flex-column">
+                        <span class="badge bg-gold text-dark fw-bold mb-2 align-self-start">Tático VIP</span>
+                        <h3 class="text-light mb-1">Central Tática</h3>
+                        <div class="price mb-4"><span class="fs-2 fw-bold text-gold">R$ 29,90</span> <span class="text-secondary">/ mês</span></div>
+                        <ul class="list-unstyled text-light small mb-4 flex-grow-1">
+                            <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Tudo do Sentinela Pro incluso</li>
+                            <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i><strong>Download direto de despachos (.mp3)</strong></li>
+                            <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Prioridade máxima no stream de áudio</li>
+                            <li class="mb-2"><i class="bi bi-check-circle-fill text-gold me-2"></i>Acesso a canais táticos especiais</li>
+                        </ul>
+                        <a href="{{ url_for('register') }}" class="btn btn-gold w-100 py-2 fw-bold">Assinar Central Tática</a>
                     </div>
                 </div>
             </div>
