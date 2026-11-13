@@ -11,6 +11,8 @@
 * **Documentação Swagger (OpenWave Core):** `http://localhost:5000/apidocs/`
 * **Painel MinIO Console:** `http://localhost:9011` (User: `minioadmin` | Pass: `minioadmin123`)
 
+* * **[Entrega p2](./docs/P2_ISW055_Victor_Siveri.pdf)**
+
 ---
 
 ## 1. Visão Geral e Proposta de Valor
